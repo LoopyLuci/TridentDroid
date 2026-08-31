@@ -1,34 +1,43 @@
-import { useNavigate } from 'react-router-dom'
-import { motion } from 'framer-motion'
-import { Plus, Monitor, Cpu, MemoryStick, HardDrive } from 'lucide-react'
-import { useInstances } from '../hooks/useInstances'
-import VmCard from '../components/VmCard'
-import { api } from '../lib/api'
-import { toast } from 'sonner'
+import { useNavigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { Plus, Monitor, Cpu, MemoryStick, HardDrive, Loader2, AlertCircle } from 'lucide-react';
+import { useInstances } from '../hooks/useInstances';
+import VmCard from '../components/VmCard';
+import { api } from '../lib/api';
+import { toast } from 'sonner';
 
 export default function Dashboard() {
-  const navigate = useNavigate()
-  const { instances, loading, error, refresh } = useInstances()
+  const navigate = useNavigate();
+  const { instances, loading, error, refresh } = useInstances();
 
   const handleStop = async (id: string) => {
     try {
-      await api.stopInstance(id)
-      toast.success(`Instance ${id} stopped`)
-      refresh()
+      await api.stopInstance(id);
+      toast.success(`Instance ${id} stopped`);
+      refresh();
     } catch (e) {
-      toast.error(`Failed to stop: ${e}`)
+      toast.error(`Failed to stop: ${e}`);
     }
-  }
+  };
 
   const handleFork = async (id: string) => {
     try {
-      await api.forkInstance(id, 1)
-      toast.success(`Forked ${id}`)
-      refresh()
+      await api.forkInstance(id, 1);
+      toast.success(`Forked ${id}`);
+      refresh();
     } catch (e) {
-      toast.error(`Failed to fork: ${e}`)
+      toast.error(`Failed to fork: ${e}`);
     }
-  }
+  };
+
+  const handlePing = async () => {
+    try {
+      const result = await api.ping();
+      toast.success(`Daemon: ${result}`);
+    } catch (e) {
+      toast.error(`Daemon unreachable: ${e}`);
+    }
+  };
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
@@ -42,13 +51,21 @@ export default function Dashboard() {
             <h1 className="text-3xl font-bold">Dashboard</h1>
             <p className="text-muted-foreground">Manage your Android emulator instances</p>
           </div>
-          <button
-            onClick={() => navigate('/create')}
-            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            Create VM
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={handlePing}
+              className="px-4 py-2 bg-secondary rounded-lg hover:bg-secondary/80 transition-colors"
+            >
+              Ping Daemon
+            </button>
+            <button
+              onClick={() => navigate('/create')}
+              className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              Create VM
+            </button>
+          </div>
         </div>
 
         {/* Stats */}
@@ -102,9 +119,22 @@ export default function Dashboard() {
         {/* Instance list */}
         <div>
           <h2 className="text-xl font-semibold mb-4">Instances</h2>
-          {loading && <p className="text-muted-foreground">Loading...</p>}
-          {error && <p className="text-destructive">Error: {error}</p>}
-          {!loading && instances.length === 0 && (
+          
+          {loading && (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+              <span className="ml-2 text-muted-foreground">Loading instances...</span>
+            </div>
+          )}
+          
+          {error && (
+            <div className="flex items-center justify-center py-12 text-destructive">
+              <AlertCircle className="w-5 h-5 mr-2" />
+              <span>Error: {error}</span>
+            </div>
+          )}
+          
+          {!loading && !error && instances.length === 0 && (
             <div className="text-center py-12 bg-card border rounded-xl">
               <Monitor className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
               <p className="text-muted-foreground mb-4">No instances yet</p>
@@ -116,6 +146,7 @@ export default function Dashboard() {
               </button>
             </div>
           )}
+          
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {instances.map(instance => (
               <VmCard
@@ -129,5 +160,5 @@ export default function Dashboard() {
         </div>
       </motion.div>
     </div>
-  )
+  );
 }
