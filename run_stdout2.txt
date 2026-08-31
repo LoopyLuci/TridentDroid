@@ -1,0 +1,10 @@
+[2m2026-05-17T01:01:50.374699Z[0m [32m INFO[0m [2mtridentd[0m[2m:[0m TridentDroid v0.1.0 — platform: Windows/WHP
+[2m2026-05-17T01:01:50.375825Z[0m [32m INFO[0m [2mtrident_hal_whp::partition[0m[2m:[0m WHP: HypervisorPresent=true
+[2m2026-05-17T01:01:50.376636Z[0m [32m INFO[0m [2mtridentd[0m[2m:[0m Launching VM: VmConfig { vcpu_count: 1, memory_mib: 512, kernel_path: "guest_kernel", initrd_path: None, cmdline: "console=ttyS0 nokaslr panic=-1 8250.nr_uarts=1", sriov_vf: None }
+[2m2026-05-17T01:01:50.380629Z[0m [32m INFO[0m [2mtrident_hal_whp::partition[0m[2m:[0m WHP partition created
+[2m2026-05-17T01:01:50.381716Z[0m [32m INFO[0m [2mtrident_hal_whp::partition[0m[2m:[0m WHP GPA map: 0x0..0x20000000 flags=MemFlags(READ | WRITE | EXECUTE | TRACK_DIRTY)
+[2m2026-05-17T01:01:50.387255Z[0m [32m INFO[0m [2mtridentd_lib::vmm::loader[0m[2m:[0m Kernel loaded: 12398336 bytes @ GPA 0x100000
+[2m2026-05-17T01:01:50.388385Z[0m [32m INFO[0m [2mtridentd_lib::vmm::vm[0m[2m:[0m Kernel entry GPA: 0x100000
+[2m2026-05-17T01:01:50.422544Z[0m [32m INFO[0m [2mtrident_hal_whp::processor[0m[2m:[0m WHP vCPU 0 created
+[2m2026-05-17T01:01:50.422786Z[0m [32m INFO[0m [2mtridentd_lib::vmm::vcpu_loop[0m[2m:[0m vCPU configured: RIP=0x100000 (32-bit protected mode)
+[2m2026-05-17T01:01:50.423016Z[0m [32m INFO[0m [2mtridentd_lib::vmm::vm[0m[2m:[0m Starting 1 vCPU(s) [WHP/Windows]

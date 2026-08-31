@@ -1,0 +1,23 @@
+[package]
+name    = "trident-hal-whp"
+version = "0.1.0"
+edition = "2021"
+description = "Windows Hypervisor Platform (WHP) backend for TridentHAL"
+
+# This crate only compiles on Windows 10 build 17134+ with the
+# "Windows Hypervisor Platform" optional feature enabled.
+# Enable it in Settings → Windows Features → Windows Hypervisor Platform.
+
+[dependencies]
+trident-hal = { path = "../trident-hal" }
+anyhow      = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# The official Microsoft windows crate — provides all WHv* bindings.
+# Features: Winerror for HRESULT helpers, Hypervisor for WHv* functions.
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Hypervisor",
+] }

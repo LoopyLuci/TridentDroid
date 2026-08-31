@@ -1,0 +1,153 @@
+syntax = "proto3";
+
+package tridentd;
+
+// ─────────────────────────────────────────────────────────────
+// TridentDroid gRPC Control Plane
+//
+// All RPCs require mTLS (client certificate mandatory).
+// Server listens on [::1]:9550 by default.
+// ─────────────────────────────────────────────────────────────
+
+service TridentDaemon {
+  // Launch a new Android VM instance.
+  rpc LaunchInstance(LaunchRequest) returns (InstanceInfo);
+
+  // Snapshot the current state of a running instance to disk.
+  rpc Snapshot(SnapshotRequest) returns (SnapshotResponse);
+
+  // Restore a previously saved snapshot.
+  rpc RestoreSnapshot(RestoreRequest) returns (InstanceInfo);
+
+  // Fork an existing instance into N children using COW memory.
+  rpc Fork(ForkRequest) returns (stream InstanceInfo);
+
+  // Bidirectional ADB shell stream.
+  rpc AdbShell(stream AdbShellRequest) returns (stream AdbShellResponse);
+
+  // Stream the display as compressed video frames.
+  rpc StreamDisplay(DisplayStreamRequest) returns (stream DisplayFrame);
+
+  // Stop and destroy an instance.
+  rpc StopInstance(StopRequest) returns (StopResponse);
+
+  // Health check.
+  rpc Ping(PingRequest) returns (PingResponse);
+}
+
+// ─── Launch ──────────────────────────────────────────────────
+
+message LaunchRequest {
+  string kernel_path   = 1;
+  string system_image  = 2;
+  string vendor_image  = 3;
+  string cmdline       = 4;
+  uint32 vcpu_count    = 5;
+  uint64 memory_mib    = 6;
+  // Optional PCI address of the SR-IOV VF to assign (e.g. "0000:03:00.1").
+  string sriov_vf      = 7;
+  // Snapshot to restore from (empty = cold boot).
+  string snapshot_id   = 8;
+}
+
+message InstanceInfo {
+  string instance_id   = 1;
+  string adb_host      = 2;
+  uint32 adb_port      = 3;
+  string display_sock  = 4;
+  InstanceState state  = 5;
+}
+
+enum InstanceState {
+  UNKNOWN  = 0;
+  BOOTING  = 1;
+  RUNNING  = 2;
+  PAUSED   = 3;
+  STOPPED  = 4;
+  FAULTED  = 5;
+}
+
+// ─── Snapshot ────────────────────────────────────────────────
+
+message SnapshotRequest {
+  string instance_id   = 1;
+  string snapshot_id   = 2;  // leave empty to auto-generate
+  bool   include_disk  = 3;  // if false, memory-only snapshot
+}
+
+message SnapshotResponse {
+  string snapshot_id   = 1;
+  uint64 size_bytes    = 2;
+  uint64 duration_ms   = 3;
+}
+
+message RestoreRequest {
+  string snapshot_id   = 1;
+  // Override hardware config on restore (optional).
+  uint32 vcpu_count    = 2;
+  uint64 memory_mib    = 3;
+}
+
+// ─── Fork ────────────────────────────────────────────────────
+
+message ForkRequest {
+  string instance_id   = 1;
+  uint32 count         = 2;  // number of children to create
+}
+
+// ─── ADB Shell ───────────────────────────────────────────────
+
+message AdbShellRequest {
+  string instance_id   = 1;
+  bytes  stdin_data    = 2;
+  bool   eof           = 3;
+}
+
+message AdbShellResponse {
+  bytes  stdout_data   = 1;
+  bytes  stderr_data   = 2;
+  int32  exit_code     = 3;  // set when stream ends
+}
+
+// ─── Display Streaming ───────────────────────────────────────
+
+message DisplayStreamRequest {
+  string instance_id   = 1;
+  VideoCodec codec     = 2;
+  uint32 target_fps    = 3;
+  uint32 bitrate_kbps  = 4;
+}
+
+enum VideoCodec {
+  H264 = 0;
+  H265 = 1;
+  AV1  = 2;
+}
+
+message DisplayFrame {
+  bytes  data          = 1;
+  uint64 pts_us        = 2;  // presentation timestamp in microseconds
+  bool   key_frame     = 3;
+  uint32 width         = 4;
+  uint32 height        = 5;
+}
+
+// ─── Stop ────────────────────────────────────────────────────
+
+message StopRequest {
+  string instance_id   = 1;
+  bool   force         = 2;
+}
+
+message StopResponse {
+  bool success         = 1;
+}
+
+// ─── Ping ────────────────────────────────────────────────────
+
+message PingRequest {}
+
+message PingResponse {
+  string version       = 1;
+  uint32 instance_count = 2;
+}

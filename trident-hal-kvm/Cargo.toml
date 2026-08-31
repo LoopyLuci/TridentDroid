@@ -1,0 +1,21 @@
+[package]
+name    = "trident-hal-kvm"
+version = "0.1.0"
+edition = "2021"
+description = "KVM backend for TridentHAL (Linux only)"
+
+# This crate only compiles and links on Linux.
+# The workspace root gates it behind cfg(target_os = "linux").
+
+[dependencies]
+trident-hal  = { path = "../trident-hal" }
+anyhow       = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+kvm-ioctls   = "0.17"
+kvm-bindings = { version = "0.8", features = ["fam-wrappers"] }
+vm-memory    = { version = "0.14", features = ["backend-mmap"] }
+linux-loader = { version = "0.11", features = ["bzimage", "elf"] }
+libc         = { workspace = true }

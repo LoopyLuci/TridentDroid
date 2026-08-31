@@ -1,0 +1,12 @@
+/target
+/Cargo.lock
+*.swp
+*.sock
+/certs/*.key
+/certs/*.crt
+/certs/*.csr
+/tmp
+/out
+*.log
+.vscode/
+.idea/

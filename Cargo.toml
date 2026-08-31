@@ -1,0 +1,17 @@
+[workspace]
+members = [
+    "trident-hal",
+    "trident-hal-kvm",
+    "trident-hal-whp",
+    "tridentd",
+]
+resolver = "2"
+
+# Shared dependency versions — override per-crate only when necessary.
+[workspace.dependencies]
+anyhow          = "1"
+thiserror       = "1"
+tracing         = "0.1"
+tokio           = { version = "1", features = ["full"] }
+bitflags        = "2"
+libc            = "0.2"

@@ -1,0 +1,54 @@
+[package]
+name        = "tridentd"
+version     = "0.1.0"
+edition     = "2021"
+description = "TridentDroid VMM daemon — Android emulator with gRPC control plane"
+
+[[bin]]
+name = "tridentd"
+path = "src/main.rs"
+
+[lib]
+name = "tridentd_lib"
+path = "src/lib.rs"
+
+[dependencies]
+trident-hal  = { path = "../trident-hal" }
+
+anyhow            = { workspace = true }
+thiserror         = { workspace = true }
+tracing           = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio             = { workspace = true }
+futures           = "0.3"
+
+# gRPC
+tonic        = { version = "0.12", features = ["tls"] }
+prost        = "0.13"
+tokio-stream = "0.1"
+
+# TLS
+rustls = { version = "0.23", features = ["ring"] }
+
+# Memory mapping (for SR-IOV BAR0 on Linux; no-op on Windows)
+memmap2 = "0.9"
+
+# Serialization
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Platform-specific HAL backend
+[target.'cfg(windows)'.dependencies]
+trident-hal-whp = { path = "../trident-hal-whp" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+trident-hal-kvm = { path = "../trident-hal-kvm" }
+linux-loader    = { version = "0.11", features = ["bzimage", "elf"] }
+vm-memory       = { version = "0.14", features = ["backend-mmap"] }
+libc            = { workspace = true }
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[dev-dependencies]
+tempfile = "3"

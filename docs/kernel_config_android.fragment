@@ -1,0 +1,53 @@
+# Minimal Linux 6.6 kernel config fragment for TridentDroid Android guests.
+# Apply with: scripts/kconfig/merge_config.sh arch/x86/configs/kvm_guest.config \
+#               /path/to/this/file
+
+# ── Core virtualization ────────────────────────────────────────────────────────
+CONFIG_KVM_GUEST=y
+CONFIG_PARAVIRT=y
+CONFIG_VIRTIO=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_VIRTIO_INPUT=y
+CONFIG_DRM_VIRTIO_GPU=y
+
+# ── Android-specific drivers ───────────────────────────────────────────────────
+CONFIG_ANDROID=y
+CONFIG_ANDROID_BINDER_IPC=y
+CONFIG_ANDROID_BINDERFS=y
+CONFIG_ASHMEM=y                    # Required by pre-5.18 Android; use memfd on newer
+CONFIG_ANDROID_LOW_MEMORY_KILLER=y
+CONFIG_SYNC_FILE=y
+CONFIG_SW_SYNC=y                   # Timeline fence for SurfaceFlinger
+CONFIG_ION=y                       # Memory allocator for gralloc
+CONFIG_DMABUF_HEAPS=y
+CONFIG_DMABUF_HEAPS_SYSTEM=y
+
+# ── Serial console (essential for Phase 1.1 milestone) ────────────────────────
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_EARLY_PRINTK=y
+
+# ── Filesystem ────────────────────────────────────────────────────────────────
+CONFIG_EXT4_FS=y
+CONFIG_F2FS_FS=y
+CONFIG_OVERLAY_FS=y
+CONFIG_FUSE_FS=y
+
+# ── Network ───────────────────────────────────────────────────────────────────
+CONFIG_INET=y
+CONFIG_IPV6=y
+
+# ── Performance / size ────────────────────────────────────────────────────────
+CONFIG_MODULES=n                   # No modules — everything built-in for fast boot
+CONFIG_INITRAMFS_SOURCE=""
+CONFIG_BLK_DEV_INITRD=y
+
+# ── SR-IOV / AMD GPU (guest side) ─────────────────────────────────────────────
+# Leave display controller idle when host owns the VF framebuffer directly.
+# Pass amdgpu.dc=0 on the kernel cmdline (done in VmConfig::cmdline), not here.
+CONFIG_DRM_AMDGPU=y
+CONFIG_DRM_AMDGPU_USERPTR=y
+CONFIG_HSA_AMD=y
