@@ -9,7 +9,7 @@
 //!
 //! All devices follow the Virtio 1.2 specification.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::VecDeque;
 use tracing::{debug, info, warn};
 
@@ -328,7 +328,7 @@ impl VirtioBlk {
     }
 
     /// Handle a read request.
-    fn handle_read(&self, ram: &mut [u8], offset: u64, len: u64) -> Result<Vec<u8>> {
+    fn handle_read(&self, _ram: &mut [u8], offset: u64, len: u64) -> Result<Vec<u8>> {
         let mut buf = vec![0u8; len as usize];
         if let Some(ref data) = self.backing_data {
             let start = offset as usize;
@@ -346,7 +346,7 @@ impl VirtioBlk {
     }
 
     /// Handle a write request.
-    fn handle_write(&mut self, ram: &mut [u8], offset: u64, data: &[u8]) -> Result<()> {
+    fn handle_write(&mut self, _ram: &mut [u8], offset: u64, data: &[u8]) -> Result<()> {
         if let Some(ref mut backing) = self.backing_data {
             let start = offset as usize;
             let end = std::cmp::min(start + data.len(), backing.len());
@@ -410,45 +410,48 @@ impl VirtioDevice for VirtioBlk {
         if queue_idx != 0 {
             return Ok(());
         }
-        let queue = &mut self.queues[0];
-        let avail_idx = queue.read_avail_idx(ram);
-        while queue.last_avail_idx != avail_idx {
-            let desc_idx = queue.read_avail_entry(ram, queue.last_avail_idx);
-            if let Some(desc) = queue.read_desc(ram, desc_idx) {
-                let hdr = queue.read_buffer(ram, &desc);
-                if hdr.len() >= 16 {
-                    let req_type = u32::from_le_bytes(hdr[0..4].try_into().unwrap());
-                    let sector = u64::from_le_bytes(hdr[8..16].try_into().unwrap());
-                    let offset = sector * self.sector_size;
-                    match req_type {
-                        0 => {
-                            let len = self.capacity.saturating_sub(offset).min(0x10000) as u64;
-                            let _ = self.handle_read(ram, offset, len)?;
-                            debug!("VirtioBlk read: sector={}, len={}", sector, len);
-                        }
-                        1 => {
-                            debug!("VirtioBlk write: sector={}", sector);
-                        }
-                        5 => {
-                            debug!("VirtioBlk flush");
-                        }
-                        _ => {
-                            warn!("VirtioBlk unknown request type: {}", req_type);
-                        }
+        let avail_idx = self.queues[0].read_avail_idx(ram);
+        let mut last_idx = self.queues[0].last_avail_idx;
+        while last_idx != avail_idx {
+            let desc_idx = self.queues[0].read_avail_entry(ram, last_idx);
+            let desc = match self.queues[0].read_desc(ram, desc_idx) {
+                Some(d) => d,
+                None => break,
+            };
+            let hdr = self.queues[0].read_buffer(ram, &desc);
+            if hdr.len() >= 16 {
+                let req_type = u32::from_le_bytes(hdr[0..4].try_into().unwrap());
+                let sector = u64::from_le_bytes(hdr[8..16].try_into().unwrap());
+                let offset = sector * self.sector_size;
+                match req_type {
+                    0 => {
+                        let len = self.capacity.saturating_sub(offset).min(0x10000) as u64;
+                        let _ = self.handle_read(ram, offset, len)?;
+                        debug!("VirtioBlk read: sector={}, len={}", sector, len);
+                    }
+                    1 => {
+                        debug!("VirtioBlk write: sector={}", sector);
+                    }
+                    5 => {
+                        debug!("VirtioBlk flush");
+                    }
+                    _ => {
+                        warn!("VirtioBlk unknown request type: {}", req_type);
                     }
                 }
-                queue.write_used_entry(
-                    ram,
-                    queue.last_avail_idx,
-                    &VirtqUsedElem {
-                        id: desc_idx as u32,
-                        len: desc.len,
-                    },
-                );
-                queue.last_avail_idx = queue.last_avail_idx.wrapping_add(1);
             }
+            self.queues[0].write_used_entry(
+                ram,
+                last_idx,
+                &VirtqUsedElem {
+                    id: desc_idx as u32,
+                    len: desc.len,
+                },
+            );
+            last_idx = last_idx.wrapping_add(1);
         }
-        queue.write_used_idx(ram, queue.last_avail_idx);
+        self.queues[0].last_avail_idx = last_idx;
+        self.queues[0].write_used_idx(ram, self.queues[0].last_avail_idx);
         Ok(())
     }
 
@@ -679,7 +682,7 @@ impl VirtioDevice for VirtioInput {
                                 let src = desc.addr as usize + off;
                                 let end = src + 8;
                                 if src < ram.len() {
-                                    let bytes = [0u8; 8];
+                                    let mut bytes = [0u8; 8];
                                     bytes[0..2].copy_from_slice(&event.type_.to_le_bytes());
                                     bytes[2..4].copy_from_slice(&event.code.to_le_bytes());
                                     bytes[4..8].copy_from_slice(&event.value.to_le_bytes());

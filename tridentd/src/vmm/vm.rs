@@ -38,20 +38,20 @@ pub struct Vm<H: Hypervisor> {
 
 impl<H: Hypervisor> Vm<H> {
     pub fn create(hyp: &Arc<H>, config: VmConfig) -> Result<Self> {
-        let vm = hyp.create_vm(config.vcpu_count as u32).context("Failed to create VM")?;
+        let vm = hyp.create_vm(config.vcpu_count as u32)
+            .with_context(|| "Failed to create VM")?;
 
         // ── Allocate guest RAM ─────────────────────────────────────────────
         let mem_bytes = (config.memory_mib as usize) << 20;
-        // 4 KiB-aligned allocation so the backend can page-map it directly.
         let mut ram = aligned_alloc(mem_bytes)?;
 
         hyp.map_memory(
             &vm,
-            0, // GPA 0 = start of guest physical address space
+            0,
             &ram,
             MemFlags::RWX_TRACKED,
         )
-        .context("Failed to map guest RAM")?;
+        .with_context(|| "Failed to map guest RAM")?;
 
         // ── Load kernel into RAM ───────────────────────────────────────────
         let entry_gpa = KernelLoader::load(
@@ -60,9 +60,8 @@ impl<H: Hypervisor> Vm<H> {
             config.initrd_path.as_deref(),
             &config.cmdline,
         )
-        .context("Failed to load kernel")?;
+        .with_context(|| "Failed to load kernel")?;
         info!("Kernel entry GPA: {:#x}", entry_gpa);
-        // Dump first 16 bytes at entry to verify kernel was loaded correctly.
         let entry_bytes = &ram[entry_gpa as usize..entry_gpa as usize + 16];
         eprintln!("DBG entry bytes: {:02x?}", entry_bytes);
 
@@ -71,10 +70,10 @@ impl<H: Hypervisor> Vm<H> {
         for id in 0..config.vcpu_count as u32 {
             let mut vcpu = hyp
                 .create_vcpu(&vm, id)
-                .with_context(|| format!("Failed to create vCPU {}", id))?;
+                .with_context(|| format!("Failed to create vCPU {id}"))?;
 
             VcpuRunner::configure_boot_regs(hyp.as_ref(), &mut vcpu, entry_gpa, mem_bytes as u64)
-                .with_context(|| format!("Failed to configure vCPU {} registers", id))?;
+                .with_context(|| format!("Failed to configure vCPU {id} registers"))?;
             hyp.set_vcpu_ram_hint(&mut vcpu, ram.as_ptr(), ram.len());
             hyp.start_debug_sampler(&vcpu, 500);
 
@@ -82,22 +81,31 @@ impl<H: Hypervisor> Vm<H> {
         }
 
         // ── Device setup ───────────────────────────────────────────────────
-        let mut devices = DeviceManager::init().context("Device init failed")?;
+        let mut devices = DeviceManager::init()
+            .with_context(|| "Device init failed")?;
         // Register virtio devices for the VM.
         // We do this after RAM is allocated but before vCPUs run.
 
         // Virtio console (for kernel messages and shell).
         devices
-            .register_virtio(Arc::new(super::device::virtio::VirtioConsole::new("console")));
+            .register_virtio(Arc::new(std::sync::Mutex::new(
+                super::virtio::VirtioConsole::new("console")
+            )));
         // Virtio block (for system.img/vendor.img).
         devices
-            .register_virtio(Arc::new(super::device::virtio::VirtioBlk::new("system")));
+            .register_virtio(Arc::new(std::sync::Mutex::new(
+                super::virtio::VirtioBlk::new("system")
+            )));
         // Virtio network.
         devices
-            .register_virtio(Arc::new(super::device::virtio::VirtioNet::new("net")));
+            .register_virtio(Arc::new(std::sync::Mutex::new(
+                super::virtio::VirtioNet::new("net")
+            )));
         // Virtio input.
         devices
-            .register_virtio(Arc::new(super::device::virtio::VirtioInput::new("input")));
+            .register_virtio(Arc::new(std::sync::Mutex::new(
+                super::virtio::VirtioInput::new("input")
+            )));
 
         let devices = Arc::new(std::sync::Mutex::new(devices));
 
@@ -112,7 +120,7 @@ impl<H: Hypervisor> Vm<H> {
     }
 
     /// Start all vCPU threads and wait for them to exit.
-    pub async fn run(self) -> Result<()> {
+    pub async fn run(mut self) -> Result<()> {
         info!("Starting {} vCPU(s) [{}/{}]",
             self.vcpus.len(),
             if cfg!(windows) { "WHP" } else { "KVM" },
@@ -124,7 +132,7 @@ impl<H: Hypervisor> Vm<H> {
             #[cfg(target_os = "linux")]
             crate::gpu::sriov::attach_vf_display(vf)?;
             #[cfg(windows)]
-            warn!("SR-IOV VF specified but not yet supported on Windows: {}", vf);
+            warn!("SR-IOV VF specified but not yet supported on Windows: {vf}");
         }
 
         let hyp = self.hyp.clone();
@@ -138,7 +146,7 @@ impl<H: Hypervisor> Vm<H> {
                 let devs = devices.clone();
                 let ram = Arc::clone(&ram);
                 tokio::task::spawn_blocking(move || {
-                    tridentd_lib::vmm::vcpu_loop::VcpuRunner::run_loop(h.as_ref(), vcpu, devs, ram)
+                    crate::vmm::vcpu_loop::VcpuRunner::run_loop(&h, vcpu, devs, ram)
                 })
             })
             .collect();
@@ -156,15 +164,10 @@ impl<H: Hypervisor> Vm<H> {
 
 /// Allocate a 4 KiB-aligned Vec<u8> of exactly `size` bytes.
 fn aligned_alloc(size: usize) -> Result<Vec<u8>> {
-    // Rust's global allocator aligns Vec to the element type (u8 = 1 byte).
-    // We need 4 KiB alignment for WHP/KVM GPA mapping.
-    // Over-allocate by PAGE_SIZE and take the aligned sub-slice... but we
-    // need to own it.  Simplest portable approach: use a boxed slice with
-    // manual alignment via alloc::alloc::alloc.
     use std::alloc::{alloc_zeroed, Layout};
     const PAGE: usize = 4096;
     let layout = Layout::from_size_align(size, PAGE)
-        .map_err(|e| anyhow::anyhow!("Layout error: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Layout error: {e}"))?;
     let ptr = unsafe { alloc_zeroed(layout) };
     anyhow::ensure!(!ptr.is_null(), "Out of memory allocating {} MiB guest RAM", size >> 20);
     // SAFETY: we just allocated this with the correct layout.

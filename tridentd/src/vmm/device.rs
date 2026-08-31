@@ -2,31 +2,29 @@
 //!
 //! This module provides the central device emulation layer.
 //! `DeviceManager` holds all devices and routes MMIO/PCI access.
-//! `PciBus` provides a minimal PCI ECAM implementation.
 //! `Device` is the common trait all virtual devices implement.
 
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tracing::{debug, info};
-use trident_hal::VcpuExit;
-
-pub mod virtio;
+use crate::vmm::virtio::VirtioDevice;
 
 pub trait Device: Send + Sync {
     fn name(&self) -> &str;
     fn read(&self, offset: u64, data: &mut [u8], ram: &[u8]) -> Result<(), String>;
-    fn write(
-        &mut self,
-        offset: u64,
-        data: &[u8],
-        ram: &mut [u8],
-        vcpu_index: usize,
-        ctx: VcpuExitData,
-    ) -> Result<(), String>;
-    fn kick_guest(&self) -> bool {
-        false
+    fn write(&mut self, offset: u64, data: &[u8], ram: &mut [u8], _vcpu_index: usize, _ctx: VcpuExitData) -> Result<(), String>;
+    fn kick_guest(&self) -> bool { false }
+}
+
+impl<T: VirtioDevice> Device for T {
+    fn name(&self) -> &str { self.name() }
+    fn read(&self, offset: u64, data: &mut [u8], _ram: &[u8]) -> Result<(), String> {
+        self.config_read(offset, data).map_err(|e| e.to_string())
     }
+    fn write(&mut self, offset: u64, data: &[u8], _ram: &mut [u8], _vcpu_index: usize, _ctx: VcpuExitData) -> Result<(), String> {
+        self.config_write(offset, data).map_err(|e| e.to_string())
+    }
+    fn kick_guest(&self) -> bool { false }
 }
 
 #[derive(Clone, Copy)]
@@ -37,12 +35,9 @@ pub struct VcpuExitData {
     pub len: u32,
 }
 
-/// Device manager — owns all virtio devices and routes MMIO/PIO.
 pub struct DeviceManager {
-    devices: Vec<Arc<dyn Device + Send + Sync>>,
-    /// MMIO region base address for each device (indexed by device index).
+    devices: Vec<Arc<Mutex<dyn Device + Send + Sync>>>,
     mmio_bases: HashMap<usize, u64>,
-    /// Next MMIO base address to assign.
     next_mmio: u64,
 }
 
@@ -58,75 +53,54 @@ impl DeviceManager {
         }
     }
 
-    pub fn init() -> Result<Self, String> {
-        info!("Device manager initialized");
+    pub fn init() -> Result<Self, anyhow::Error> {
+        debug!("Device manager initialized");
         Ok(Self::new())
     }
 
-    /// Register a virtio device and assign it an MMIO region.
-    pub fn register_virtio(&mut self, device: Arc<dyn Device + Send + Sync>) -> usize {
+    pub fn register_virtio(&mut self, device: Arc<Mutex<dyn Device + Send + Sync>>) -> usize {
         let idx = self.devices.len();
         let base = self.next_mmio;
         self.next_mmio += Self::MMIO_STEP;
         self.mmio_bases.insert(idx, base);
         self.devices.push(device);
-        info!(
-            "Virtio device #{} registered at MMIO base {:#x}",
-            idx, base
-        );
+        info!("Virtio device #{idx} registered at MMIO base {base:#x}");
         idx
     }
 
-    /// Read from an MMIO region. Returns Ok(()) if a device handled it.
     pub fn mmio_read(&self, addr: u64, data: &mut [u8]) -> Result<(), String> {
         for (idx, base) in &self.mmio_bases {
             if addr >= *base && addr < *base + Self::MMIO_STEP {
-                let offset = addr - base;
-                let ram = vec![0u8; 0]; // Dummy RAM for now
-                return self.devices[*idx].read(offset, data, &ram);
+                let _offset = addr - base;
+                let ram = vec![];
+                return self.devices[*idx].lock().unwrap().read(_offset, data, &ram);
             }
         }
-        // No device mapped — return zeros
-        for b in data.iter_mut() {
-            *b = 0;
-        }
+        for b in data.iter_mut() { *b = 0; }
         Ok(())
     }
 
-    /// Write to an MMIO region. Returns Ok(()) if a device handled it.
-    pub fn mmio_write(&mut self, addr: u64, data: &[u8]) -> Result<(), String> {
+    pub fn mmio_write(&self, addr: u64, data: &[u8]) -> Result<(), String> {
         for (idx, base) in &self.mmio_bases {
             if addr >= *base && addr < *base + Self::MMIO_STEP {
-                let offset = addr - base;
-                let mut ram = vec![0u8; 0]; // Dummy RAM for now
-                let ctx = VcpuExitData {
-                    vcpu_index: 0,
-                    port: 0,
-                    data_ptr: 0,
-                    len: data.len() as u32,
-                };
-                return self.devices[*idx].write(offset, data, &mut ram, 0, ctx);
+                let _offset = addr - base;
+                let mut ram = vec![];
+                let ctx = VcpuExitData { vcpu_index: 0, port: 0, data_ptr: 0, len: data.len() as u32 };
+                return self.devices[*idx].lock().unwrap().write(_offset, data, &mut ram, 0, ctx);
             }
         }
-        // No device mapped — ignore
         Ok(())
     }
 
-    /// Notify a device's virtqueue (called when guest writes to queue notify register).
-    pub fn notify_queue(&mut self, idx: usize, queue_idx: u16) -> Result<(), String> {
-        // For now, just log
-        debug!("Notify queue {} for device #{}", queue_idx, idx);
+    pub fn notify_queue(&self, idx: usize, queue_idx: u16) -> Result<(), String> {
+        debug!("Notify queue {queue_idx} for device #{idx}");
         Ok(())
     }
 
-    /// Reset all devices.
     pub fn reset_all(&mut self) -> Result<(), String> {
         info!("Resetting all devices");
         Ok(())
     }
 
-    /// Poll all devices for pending work.
-    pub fn poll_all(&mut self) -> Result<(), String> {
-        Ok(())
-    }
+    pub fn poll_all(&mut self) -> Result<(), String> { Ok(()) }
 }
