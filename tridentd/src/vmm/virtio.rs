@@ -479,6 +479,8 @@ pub struct VirtioConsole {
     queues: Vec<VirtQueue>,
     rx_buffers: VecDeque<Vec<u8>>,
     tx_buffers: VecDeque<Vec<u8>>,
+    /// Console socket path (optional).
+    console_sock: Option<String>,
 }
 
 impl VirtioConsole {
@@ -492,7 +494,13 @@ impl VirtioConsole {
             queues: vec![VirtQueue::new(0, 256), VirtQueue::new(1, 256)],
             rx_buffers: VecDeque::new(),
             tx_buffers: VecDeque::new(),
+            console_sock: None,
         }
+    }
+
+    /// Set the console socket path.
+    pub fn set_console_sock(&mut self, path: String) {
+        self.console_sock = Some(path);
     }
 
     /// Get the next transmit buffer (data from guest).

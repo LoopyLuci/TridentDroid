@@ -26,6 +26,9 @@ fn parse_args() -> Result<Args> {
     let mut sriov_vf: Option<String> = None;
     let mut serve = false;
     let mut single = false;
+    let mut system_image: Option<String> = None;
+    let mut vendor_image: Option<String> = None;
+    let mut console_sock: Option<String> = None;
 
     while let Some(flag) = it.next() {
         match flag.as_str() {
@@ -37,6 +40,9 @@ fn parse_args() -> Result<Args> {
             "--vcpus"    => vcpu_count = it.next().ok_or_else(|| anyhow::anyhow!("--vcpus needs N"))?.parse()?,
             "--mem"      => memory_mib = it.next().ok_or_else(|| anyhow::anyhow!("--mem needs MiB"))?.parse()?,
             "--sriov-vf" => sriov_vf = Some(it.next().ok_or_else(|| anyhow::anyhow!("--sriov-vf needs PCI addr"))?.clone()),
+            "--system"   => system_image = Some(it.next().ok_or_else(|| anyhow::anyhow!("--system needs a path"))?.clone()),
+            "--vendor"   => vendor_image = Some(it.next().ok_or_else(|| anyhow::anyhow!("--vendor needs a path"))?.clone()),
+            "--console-sock" => console_sock = Some(it.next().ok_or_else(|| anyhow::anyhow!("--console-sock needs a path"))?.clone()),
             other        => bail!("Unknown flag: {}", other),
         }
     }
@@ -56,6 +62,9 @@ fn parse_args() -> Result<Args> {
             initrd_path,
             cmdline,
             sriov_vf,
+            system_image,
+            vendor_image,
+            console_sock,
         }),
     })
 }

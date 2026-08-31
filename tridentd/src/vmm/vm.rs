@@ -17,6 +17,12 @@ pub struct VmConfig {
     pub cmdline:     String,
     /// PCI address of SR-IOV VF for direct display (e.g. "0000:03:00.1").
     pub sriov_vf:    Option<String>,
+    /// Path to Android system.img (raw or sparse).
+    pub system_image: Option<String>,
+    /// Path to Android vendor.img (raw or sparse).
+    pub vendor_image: Option<String>,
+    /// Console socket path.
+    pub console_sock: Option<String>,
 }
 
 /// A running virtual machine.
@@ -87,20 +93,35 @@ impl<H: Hypervisor> Vm<H> {
         // We do this after RAM is allocated but before vCPUs run.
 
         // Virtio console (for kernel messages and shell).
+        let mut console = super::virtio::VirtioConsole::new("console");
+        if let Some(ref sock) = config.console_sock {
+            console.set_console_sock(sock.clone());
+        }
         devices
             .register_virtio(Arc::new(std::sync::Mutex::new(
-                super::virtio::VirtioConsole::new("console")
+                console
             )));
+
         // Virtio block (for system.img/vendor.img).
-        devices
-            .register_virtio(Arc::new(std::sync::Mutex::new(
-                super::virtio::VirtioBlk::new("system")
-            )));
+        let mut blk = super::virtio::VirtioBlk::new("system");
+        if let Some(ref path) = config.system_image {
+            blk.set_backing(path)?;
+        }
+        devices.register_virtio(Arc::new(std::sync::Mutex::new(blk)));
+
+        // Virtio block 2 (for vendor.img).
+        let mut vendor_blk = super::virtio::VirtioBlk::new("vendor");
+        if let Some(ref path) = config.vendor_image {
+            vendor_blk.set_backing(path)?;
+        }
+        devices.register_virtio(Arc::new(std::sync::Mutex::new(vendor_blk)));
+
         // Virtio network.
         devices
             .register_virtio(Arc::new(std::sync::Mutex::new(
                 super::virtio::VirtioNet::new("net")
             )));
+
         // Virtio input.
         devices
             .register_virtio(Arc::new(std::sync::Mutex::new(

@@ -61,6 +61,9 @@ impl TridentDaemon for TridentService {
             initrd_path: None,
             cmdline: r.cmdline,
             sriov_vf: if r.sriov_vf.is_empty() { None } else { Some(r.sriov_vf) },
+            system_image: if r.system_image.is_empty() { None } else { Some(r.system_image) },
+            vendor_image: if r.vendor_image.is_empty() { None } else { Some(r.vendor_image) },
+            console_sock: Some(format!("/tmp/trident-{id}.sock")),
         };
 
         let hyp = std::sync::Arc::new(crate::platform::open_hypervisor().map_err(internal)?);
