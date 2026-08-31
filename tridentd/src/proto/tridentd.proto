@@ -16,6 +16,12 @@ service TridentDaemon {
   // Stop and destroy an instance.
   rpc StopInstance(StopRequest) returns (StopResponse);
 
+  // List all instances managed by the daemon.
+  rpc ListInstances(ListInstancesRequest) returns (ListInstancesResponse);
+
+  // Get a single instance's info.
+  rpc GetInstance(GetInstanceRequest) returns (InstanceInfo);
+
   // Fork an existing instance into N children using COW memory.
   rpc Fork(ForkRequest) returns (stream InstanceInfo);
 
@@ -135,6 +141,18 @@ message StopRequest {
 
 message StopResponse {
   bool success         = 1;
+}
+
+// ─── List Instances ─────────────────────────────────────────
+
+message ListInstancesRequest {}
+
+message ListInstancesResponse {
+  repeated InstanceInfo instances = 1;
+}
+
+message GetInstanceRequest {
+  string instance_id   = 1;
 }
 
 // ─── Ping ────────────────────────────────────────────────────

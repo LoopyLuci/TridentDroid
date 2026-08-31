@@ -26,6 +26,10 @@ export interface AppSettings {
   theme: string
   vcpu_default: number
   memory_default_mib: number
+  use_tls: boolean
+  ca_cert_path: string
+  client_cert_path: string
+  client_key_path: string
 }
 
 export type Theme = 'light' | 'dark' | 'system'

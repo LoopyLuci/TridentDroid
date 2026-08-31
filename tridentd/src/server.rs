@@ -227,6 +227,29 @@ impl TridentDaemon for TridentService {
         };
         Ok(Response::new(StopResponse { success: removed }))
     }
+
+    // ── List Instances ───────────────────────────────────────────────────────
+    async fn list_instances(
+        &self,
+        _req: Request<ListInstancesRequest>,
+    ) -> Result<Response<ListInstancesResponse>, Status> {
+        let instances = self.instances.read().await;
+        let infos = instances.values().map(|i| i.info.clone()).collect();
+        Ok(Response::new(ListInstancesResponse { instances: infos }))
+    }
+
+    // ── Get Instance ─────────────────────────────────────────────────────────
+    async fn get_instance(
+        &self,
+        req: Request<GetInstanceRequest>,
+    ) -> Result<Response<tridentd::InstanceInfo>, Status> {
+        let id = req.into_inner().instance_id;
+        let instances = self.instances.read().await;
+        match instances.get(&id) {
+            Some(instance) => Ok(Response::new(instance.info.clone())),
+            None => Err(Status::not_found(format!("Instance {id} not found"))),
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

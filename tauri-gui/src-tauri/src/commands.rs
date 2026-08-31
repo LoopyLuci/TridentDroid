@@ -1,6 +1,6 @@
 // commands.rs — Tauri IPC commands that wrap tridentd gRPC
 
-use crate::client::DaemonClient;
+use crate::client::{ConnectionConfig, DaemonClient};
 use crate::client::proto;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -42,6 +42,10 @@ pub struct AppSettings {
     pub theme: String,
     pub vcpu_default: u32,
     pub memory_default_mib: u64,
+    pub use_tls: bool,
+    pub ca_cert_path: String,
+    pub client_cert_path: String,
+    pub client_key_path: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -60,23 +64,35 @@ fn map_instance_info(info: &proto::InstanceInfo) -> InstanceInfo {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Commands
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn ping_daemon(state: State<'_, AppState>) -> Result<String, String> {
+async fn get_client<'a>(state: &'a State<'a, AppState>) -> Result<tokio::sync::MutexGuard<'a, Option<DaemonClient>>, String> {
     let mut daemon = state.daemon.lock().await;
     if daemon.is_none() {
         let settings = state.settings.lock().await;
-        let addr = format!("http://{}:{}", settings.grpc_host, settings.grpc_port);
-        match DaemonClient::connect(&addr).await {
+        let config = ConnectionConfig {
+            host: settings.grpc_host.clone(),
+            port: settings.grpc_port,
+            use_tls: settings.use_tls,
+            ca_cert_path: if settings.ca_cert_path.is_empty() { None } else { Some(settings.ca_cert_path.clone()) },
+            client_cert_path: if settings.client_cert_path.is_empty() { None } else { Some(settings.client_cert_path.clone()) },
+            client_key_path: if settings.client_key_path.is_empty() { None } else { Some(settings.client_key_path.clone()) },
+        };
+        match DaemonClient::connect_with_config(&config).await {
             Ok(client) => {
                 *daemon = Some(client);
             }
             Err(e) => return Err(format!("Cannot connect to daemon: {}", e)),
         }
     }
+    Ok(daemon)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Commands
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn ping_daemon(state: State<'_, AppState>) -> Result<String, String> {
+    let mut daemon = get_client(&state).await?;
     let client = daemon.as_mut().unwrap();
     match client.ping().await {
         Ok(resp) => Ok(format!("pong (v{}, {} instances)", resp.version, resp.instance_count)),
@@ -89,17 +105,7 @@ pub async fn launch_instance(
     config: VmConfig,
     state: State<'_, AppState>,
 ) -> Result<InstanceInfo, String> {
-    let mut daemon = state.daemon.lock().await;
-    if daemon.is_none() {
-        let settings = state.settings.lock().await;
-        let addr = format!("http://{}:{}", settings.grpc_host, settings.grpc_port);
-        match DaemonClient::connect(&addr).await {
-            Ok(client) => {
-                *daemon = Some(client);
-            }
-            Err(e) => return Err(format!("Cannot connect to daemon: {}", e)),
-        }
-    }
+    let mut daemon = get_client(&state).await?;
     let client = daemon.as_mut().unwrap();
     match client.launch_instance(
         config.kernel_path,
@@ -120,11 +126,17 @@ pub async fn launch_instance(
 
 #[tauri::command]
 pub async fn list_instances(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
 ) -> Result<Vec<InstanceInfo>, String> {
-    // For now, we can't list instances via the gRPC proto since there's no List RPC.
-    // Return an empty list - the frontend will use the launch response.
-    Ok(vec![])
+    let mut daemon = get_client(&state).await?;
+    let client = daemon.as_mut().unwrap();
+    match client.list_instances().await {
+        Ok(instances) => {
+            let mapped = instances.iter().map(|i| map_instance_info(i)).collect();
+            Ok(mapped)
+        }
+        Err(e) => Err(format!("List failed: {}", e)),
+    }
 }
 
 #[tauri::command]
@@ -132,17 +144,7 @@ pub async fn stop_instance(
     instance_id: String,
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
-    let mut daemon = state.daemon.lock().await;
-    if daemon.is_none() {
-        let settings = state.settings.lock().await;
-        let addr = format!("http://{}:{}", settings.grpc_host, settings.grpc_port);
-        match DaemonClient::connect(&addr).await {
-            Ok(client) => {
-                *daemon = Some(client);
-            }
-            Err(e) => return Err(format!("Cannot connect to daemon: {}", e)),
-        }
-    }
+    let mut daemon = get_client(&state).await?;
     let client = daemon.as_mut().unwrap();
     match client.stop_instance(instance_id).await {
         Ok(success) => Ok(success),
@@ -152,11 +154,16 @@ pub async fn stop_instance(
 
 #[tauri::command]
 pub async fn get_instance_info(
-    _instance_id: String,
-    _state: State<'_, AppState>,
+    instance_id: String,
+    state: State<'_, AppState>,
 ) -> Result<Option<InstanceInfo>, String> {
-    // No direct "get instance" RPC in the proto - return None for now
-    Ok(None)
+    let mut daemon = get_client(&state).await?;
+    let client = daemon.as_mut().unwrap();
+    match client.get_instance(instance_id).await {
+        Ok(Some(info)) => Ok(Some(map_instance_info(&info))),
+        Ok(None) => Ok(None),
+        Err(e) => Err(format!("Get instance failed: {}", e)),
+    }
 }
 
 #[tauri::command]
@@ -165,17 +172,7 @@ pub async fn fork_instance(
     count: u32,
     state: State<'_, AppState>,
 ) -> Result<Vec<InstanceInfo>, String> {
-    let mut daemon = state.daemon.lock().await;
-    if daemon.is_none() {
-        let settings = state.settings.lock().await;
-        let addr = format!("http://{}:{}", settings.grpc_host, settings.grpc_port);
-        match DaemonClient::connect(&addr).await {
-            Ok(client) => {
-                *daemon = Some(client);
-            }
-            Err(e) => return Err(format!("Cannot connect to daemon: {}", e)),
-        }
-    }
+    let mut daemon = get_client(&state).await?;
     let client = daemon.as_mut().unwrap();
     match client.fork_instance(instance_id, count).await {
         Ok(children) => {
