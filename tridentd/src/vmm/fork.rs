@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tracing::{info, warn};
-use trident_hal::{Hypervisor, MemFlags, Regs, VcpuExit};
+use trident_hal::{Hypervisor, MemFlags};
 
 use super::device::DeviceManager;
 use super::vm::VmConfig;
@@ -104,7 +104,7 @@ impl<H: Hypervisor> ForkCoordinator<H> {
         }
 
         // ── Step 5: Set up write fault handlers for children ────────────────
-        for (i, child_vm) in child_vms.iter().enumerate() {
+        for (i, _child_vm) in child_vms.iter().enumerate() {
             info!("COW fork: setting up write fault handlers for child {i}");
             // Write fault handling is done in the vCPU loop — on MmioWrite
             // exit, the handler allocates a new page, copies parent data,
