@@ -1,0 +1,13 @@
+{
+  "identifier": "default",
+  "description": "Default permissions for TridentDroid GUI",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:default",
+    "dialog:default",
+    "fs:default",
+    "notification:default",
+    "updater:default"
+  ]
+}
