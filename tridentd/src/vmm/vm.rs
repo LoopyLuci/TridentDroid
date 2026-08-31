@@ -140,6 +140,31 @@ impl<H: Hypervisor> Vm<H> {
         })
     }
 
+    /// Build an Android-specific kernel cmdline.
+    pub fn android_cmdline(
+        &self,
+        console: &str,
+        root: &str,
+        extra: &str,
+    ) -> String {
+        let mut cmd = format!(
+            "console={} earlyprintk=serial androidboot.hardware=trident \
+             root={} skip_initrc init=/init androidboot.selinux=permissive \
+             firmware_class.path=/vendor/firmware",
+            console, root
+        );
+        if !extra.is_empty() {
+            cmd.push(' ');
+            cmd.push_str(extra);
+        }
+        cmd
+    }
+
+    /// Build a full Android cmdline with all standard options.
+    pub fn android_cmdline_full(&self) -> String {
+        self.android_cmdline("ttyS0", "/dev/vda1", "androidboot.serialno=TRIDENT001")
+    }
+
     /// Start all vCPU threads and wait for them to exit.
     pub async fn run(mut self) -> Result<()> {
         info!("Starting {} vCPU(s) [{}/{}]",
