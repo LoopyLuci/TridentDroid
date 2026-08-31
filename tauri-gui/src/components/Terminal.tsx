@@ -54,11 +54,11 @@ export default function Terminal({ instanceId, onCommand }: TerminalProps) {
     term.writeln('\x1b[90mConnecting...\x1b[0m');
     term.writeln('');
 
-    term.onKey(({ key, domEvent }) => {
+    term.onKey((e: { key: string; domEvent: KeyboardEvent }) => {
+      const { key, domEvent } = e;
       const printable = !domEvent.altKey && !domEvent.ctrlKey && !domEvent.metaKey;
       
       if (domEvent.keyCode === 13) {
-        // Enter
         term.writeln('');
         if (commandBuffer.trim() && onCommand) {
           onCommand(commandBuffer);
@@ -66,7 +66,6 @@ export default function Terminal({ instanceId, onCommand }: TerminalProps) {
         commandBuffer = '';
         term.write('$ ');
       } else if (domEvent.keyCode === 8) {
-        // Backspace
         if (commandBuffer.length > 0) {
           commandBuffer = commandBuffer.slice(0, -1);
           term.write('\b \b');
