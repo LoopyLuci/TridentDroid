@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Maximize, Minimize, RefreshCw } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 interface DisplayProps {
   instanceId: string;
@@ -7,11 +9,21 @@ interface DisplayProps {
   height?: number;
 }
 
+interface DisplayFrame {
+  data: number[];
+  pts_us: number;
+  key_frame: boolean;
+  width: number;
+  height: number;
+}
+
 export default function Display({ instanceId, width = 1920, height = 1080 }: DisplayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [fps, setFps] = useState(0);
   const [connected, setConnected] = useState(false);
+  const frameCountRef = useRef(0);
+  const lastFpsTimeRef = useRef(Date.now());
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -33,8 +45,45 @@ export default function Display({ instanceId, width = 1920, height = 1080 }: Dis
     ctx.fillText(`Instance: ${instanceId}`, width / 2, height / 2 + 10);
     ctx.fillText('Waiting for connection...', width / 2, height / 2 + 35);
 
-    // In a full implementation, this would connect to the display stream
-    // and render frames on the canvas
+    // Start the display stream
+    invoke<void>('start_display_stream', { instanceId })
+      .then(() => {
+        setConnected(true);
+      })
+      .catch((e) => {
+        console.error('Failed to start display stream:', e);
+      });
+
+    // Listen for display frame events
+    const unlisten = listen<DisplayFrame>(`display_frame_${instanceId}`, (event) => {
+      const frame = event.payload;
+      if (!ctx || !canvas) return;
+
+      // Update FPS counter
+      frameCountRef.current++;
+      const now = Date.now();
+      if (now - lastFpsTimeRef.current >= 1000) {
+        setFps(frameCountRef.current);
+        frameCountRef.current = 0;
+        lastFpsTimeRef.current = now;
+      }
+
+      // Render the frame
+      if (frame.data && frame.data.length > 0) {
+        // For raw RGBA data
+        const imageData = new ImageData(
+          new Uint8ClampedArray(frame.data),
+          frame.width || width,
+          frame.height || height
+        );
+        ctx.putImageData(imageData, 0, 0);
+      }
+    });
+
+    return () => {
+      unlisten.then((f) => f()).catch(() => {});
+      invoke('close_display_stream', { instanceId }).catch(() => {});
+    };
   }, [instanceId, width, height]);
 
   const toggleFullscreen = () => {

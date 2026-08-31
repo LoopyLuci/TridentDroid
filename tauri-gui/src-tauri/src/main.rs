@@ -3,6 +3,7 @@
 
 mod commands;
 mod client;
+mod streaming;
 
 fn main() {
     tracing_subscriber::fmt()
@@ -19,6 +20,7 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(commands::AppState::default())
+        .manage(streaming::StreamingState::default())
         .invoke_handler(tauri::generate_handler![
             commands::ping_daemon,
             commands::launch_instance,
@@ -30,6 +32,11 @@ fn main() {
             commands::check_updates,
             commands::get_settings,
             commands::save_settings,
+            streaming::start_adb_shell,
+            streaming::send_adb_command,
+            streaming::start_display_stream,
+            streaming::close_adb_shell,
+            streaming::close_display_stream,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
