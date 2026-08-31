@@ -1,12 +1,29 @@
-/target
-/Cargo.lock
-*.swp
-*.sock
-/certs/*.key
-/certs/*.crt
-/certs/*.csr
-/tmp
-/out
-*.log
+# Rust
+target/
+**/target/
+*.lock
+
+# Node
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+
+# IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
