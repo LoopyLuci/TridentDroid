@@ -126,25 +126,6 @@ impl TridentDaemon for TridentService {
         Ok(Response::new(instance_info))
     }
 
-    // ── Snapshot ──────────────────────────────────────────────────────────────
-    async fn snapshot(
-        &self,
-        req: Request<SnapshotRequest>,
-    ) -> Result<Response<SnapshotResponse>, Status> {
-        let r = req.into_inner();
-        info!("Snapshot instance={} snapshot_id={}", r.instance_id, r.snapshot_id);
-        Err(Status::unimplemented("Phase 3"))
-    }
-
-    async fn restore_snapshot(
-        &self,
-        req: Request<RestoreRequest>,
-    ) -> Result<Response<tridentd::InstanceInfo>, Status> {
-        let r = req.into_inner();
-        info!("RestoreSnapshot snapshot_id={}", r.snapshot_id);
-        Err(Status::unimplemented("Phase 3"))
-    }
-
     // ── Fork (server-side streaming) ──────────────────────────────────────────
     type ForkStream = ReceiverStream<Result<tridentd::InstanceInfo, Status>>;
 

@@ -4,14 +4,15 @@ members = [
     "trident-hal-kvm",
     "trident-hal-whp",
     "tridentd",
+    "tauri-gui/src-tauri",
 ]
-exclude = ["tauri-gui/src-tauri"]
 resolver = "2"
 
 # Shared dependency versions — override per-crate only when necessary.
 [workspace.dependencies]
 anyhow          = "1"
 thiserror       = "1"
+serde           = { version = "1", features = ["derive"] }
 tracing         = "0.1"
 tokio           = { version = "1", features = ["full"] }
 bitflags        = "2"

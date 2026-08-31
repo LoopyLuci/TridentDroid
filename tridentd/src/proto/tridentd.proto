@@ -13,11 +13,8 @@ service TridentDaemon {
   // Launch a new Android VM instance.
   rpc LaunchInstance(LaunchRequest) returns (InstanceInfo);
 
-  // Snapshot the current state of a running instance to disk.
-  rpc Snapshot(SnapshotRequest) returns (SnapshotResponse);
-
-  // Restore a previously saved snapshot.
-  rpc RestoreSnapshot(RestoreRequest) returns (InstanceInfo);
+  // Stop and destroy an instance.
+  rpc StopInstance(StopRequest) returns (StopResponse);
 
   // Fork an existing instance into N children using COW memory.
   rpc Fork(ForkRequest) returns (stream InstanceInfo);
@@ -27,9 +24,6 @@ service TridentDaemon {
 
   // Stream the display as compressed video frames.
   rpc StreamDisplay(DisplayStreamRequest) returns (stream DisplayFrame);
-
-  // Stop and destroy an instance.
-  rpc StopInstance(StopRequest) returns (StopResponse);
 
   // Health check.
   rpc Ping(PingRequest) returns (PingResponse);
