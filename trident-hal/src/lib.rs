@@ -10,7 +10,7 @@ pub mod regs;
 pub mod exit;
 pub mod mem;
 
-pub use exit::VcpuExit;
+pub use exit::{VcpuAccess, VcpuExit};
 pub use mem::{DirtyBitmap, MemFlags};
 pub use regs::{Regs, Segment, Sregs};
 
@@ -49,11 +49,19 @@ pub trait Hypervisor: Send + Sync + 'static {
     /// Create vCPU number `id` inside `vm`.  `id` must be unique per VM.
     fn create_vcpu(&self, vm: &Self::Vm, id: u32) -> Result<Self::Vcpu>;
 
-    /// Run the vCPU until the next VM exit.
+    /// Run the vCPU until a terminal exit (Hlt/Shutdown/Debug).
     ///
     /// **Must be called from the thread that owns the vCPU.**
-    /// Blocks until an exit occurs and returns a platform-agnostic reason.
-    fn run_vcpu(&self, vcpu: &mut Self::Vcpu) -> Result<VcpuExit>;
+    /// Every PIO/MMIO access encountered along the way is handed to
+    /// `on_access` synchronously — the callback must fill the buffer on
+    /// read accesses — before the backend re-enters the vCPU, since that's
+    /// the only point where the result can still reach the guest (a
+    /// register write for reads, an unconditional RIP advance either way).
+    fn run_vcpu(
+        &self,
+        vcpu: &mut Self::Vcpu,
+        on_access: &mut dyn FnMut(VcpuAccess) -> Result<()>,
+    ) -> Result<VcpuExit>;
 
     /// Optional hint: give the backend a read-only view of guest RAM so
     /// diagnostic samplers can inspect memory (e.g. dump instruction bytes).

@@ -84,13 +84,12 @@ impl KvmVm {
 
     pub fn query_dirty_bitmap(&self, guest_phys: u64, size: u64) -> Result<DirtyBitmap> {
         let page_count = size / 4096;
-        let words_needed = ((page_count + 63) / 64) as usize;
-        let mut words = vec![0u64; words_needed];
 
         // Slot 0 is assumed to cover the full RAM range (single-slot design).
         // Phase 3 will generalise this to the slot map.
-        self.fd
-            .get_dirty_log(0, &mut words)
+        let words = self
+            .fd
+            .get_dirty_log(0, size as usize)
             .context("KVM_GET_DIRTY_LOG failed")?;
 
         Ok(DirtyBitmap { base_gpa: guest_phys, page_count, words })

@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use kvm_ioctls::VcpuExit as KvmExit;
 use tracing::debug;
-use trident_hal::{Regs, Segment, Sregs, VcpuExit};
+use trident_hal::{Regs, Segment, Sregs, VcpuAccess, VcpuExit};
 
 use super::KvmVm;
 
@@ -21,33 +21,27 @@ impl KvmVcpu {
         Ok(Self { id, fd })
     }
 
-    pub fn run(&mut self) -> Result<VcpuExit> {
+    pub fn run(&mut self, on_access: &mut dyn FnMut(VcpuAccess) -> Result<()>) -> Result<VcpuExit> {
         loop {
             match self.fd.run().context("KVM_RUN failed")? {
+                // `data` here aliases the shared `kvm_run` mmap page directly
+                // (kvm-ioctls' documented contract: "the given slice should
+                // be filled in before `run()` is called again"). Passing it
+                // straight to `on_access` — instead of copying it out — is
+                // what makes read completion actually reach the guest: KVM
+                // consumes whatever's left in this exact buffer on the next
+                // `KVM_RUN`.
                 KvmExit::IoIn(port, data) => {
-                    return Ok(VcpuExit::IoIn {
-                        port,
-                        data: data.to_vec(),
-                    });
+                    on_access(VcpuAccess::IoIn { port, data })?;
                 }
                 KvmExit::IoOut(port, data) => {
-                    return Ok(VcpuExit::IoOut {
-                        port,
-                        data: data.to_vec(),
-                    });
+                    on_access(VcpuAccess::IoOut { port, data })?;
                 }
                 KvmExit::MmioRead(addr, data) => {
-                    return Ok(VcpuExit::MmioRead {
-                        addr,
-                        len: data.len(),
-                        data: data.to_vec(),
-                    });
+                    on_access(VcpuAccess::MmioRead { addr, data })?;
                 }
                 KvmExit::MmioWrite(addr, data) => {
-                    return Ok(VcpuExit::MmioWrite {
-                        addr,
-                        data: data.to_vec(),
-                    });
+                    on_access(VcpuAccess::MmioWrite { addr, data })?;
                 }
                 KvmExit::Hlt => return Ok(VcpuExit::Hlt),
                 KvmExit::Shutdown => return Ok(VcpuExit::Shutdown),

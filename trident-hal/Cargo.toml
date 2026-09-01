@@ -8,3 +8,4 @@ description = "Platform-agnostic hypervisor abstraction trait for TridentDroid"
 anyhow   = { workspace = true }
 bitflags = { workspace = true }
 thiserror = { workspace = true }
+serde    = { workspace = true }

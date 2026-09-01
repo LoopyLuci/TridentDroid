@@ -38,6 +38,23 @@ impl WhpVm {
             .context("WHvSetPartitionProperty(ProcessorCount) failed")?;
         }
 
+        // Fully virtualise the per-vCPU Local APIC in-hypervisor (the WHP
+        // analog of KVM's `create_irq_chip`), so LAPIC MMIO/MSR traffic never
+        // becomes a userspace vm-exit. WHP has no equivalent for the IOAPIC,
+        // so that MMIO range still needs to be decoded/handled by the VMM.
+        let apic_prop = WHV_PARTITION_PROPERTY {
+            LocalApicEmulationMode: WHvX64LocalApicEmulationModeX2Apic,
+        };
+        unsafe {
+            WHvSetPartitionProperty(
+                handle,
+                WHvPartitionPropertyCodeLocalApicEmulationMode,
+                &apic_prop as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<WHV_PARTITION_PROPERTY>() as u32,
+            )
+            .context("WHvSetPartitionProperty(LocalApicEmulationMode) failed")?;
+        }
+
         // Finalise the partition — no more property changes after this.
         unsafe {
             WHvSetupPartition(handle).context("WHvSetupPartition failed")?;

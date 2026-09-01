@@ -1,3 +1,4 @@
+#![allow(non_upper_case_globals)] // WHvRunVpExitReason*/WHvX64Register* constants are camelCase in the real API.
 //! Windows Hypervisor Platform (WHP) backend for TridentHAL.
 //!
 //! Requires:
@@ -23,7 +24,7 @@ pub use partition::WhpVm;
 pub use processor::WhpVcpu;
 
 use anyhow::Result;
-use trident_hal::{DirtyBitmap, Hypervisor, MemFlags, Regs, Sregs, VcpuExit};
+use trident_hal::{DirtyBitmap, Hypervisor, MemFlags, Regs, Sregs, VcpuAccess, VcpuExit};
 
 /// The WHP hypervisor backend.  Create one with `WhpHypervisor::new()`.
 pub struct WhpHypervisor;
@@ -91,11 +92,15 @@ impl Hypervisor for WhpHypervisor {
         { let _ = (vcpu, interval_ms); }
     }
 
-    fn run_vcpu(&self, vcpu: &mut WhpVcpu) -> Result<VcpuExit> {
+    fn run_vcpu(
+        &self,
+        vcpu: &mut WhpVcpu,
+        on_access: &mut dyn FnMut(VcpuAccess) -> Result<()>,
+    ) -> Result<VcpuExit> {
         #[cfg(windows)]
-        return vcpu.run();
+        return vcpu.run(on_access);
         #[cfg(not(windows))]
-        { let _ = vcpu; anyhow::bail!("WHP not available"); }
+        { let _ = (vcpu, on_access); anyhow::bail!("WHP not available"); }
     }
 
     fn get_regs(&self, vcpu: &WhpVcpu) -> Result<Regs> {

@@ -13,7 +13,7 @@ pub use vcpu::KvmVcpu;
 
 use anyhow::{Context, Result};
 use kvm_ioctls::Kvm;
-use trident_hal::{DirtyBitmap, Hypervisor, MemFlags, Regs, Sregs, VcpuExit};
+use trident_hal::{DirtyBitmap, Hypervisor, MemFlags, Regs, Sregs, VcpuAccess, VcpuExit};
 
 /// The KVM hypervisor backend.  Create one per process with `KvmHypervisor::open()`.
 pub struct KvmHypervisor {
@@ -45,8 +45,12 @@ impl Hypervisor for KvmHypervisor {
         KvmVcpu::new(vm, id)
     }
 
-    fn run_vcpu(&self, vcpu: &mut KvmVcpu) -> Result<VcpuExit> {
-        vcpu.run()
+    fn run_vcpu(
+        &self,
+        vcpu: &mut KvmVcpu,
+        on_access: &mut dyn FnMut(VcpuAccess) -> Result<()>,
+    ) -> Result<VcpuExit> {
+        vcpu.run(on_access)
     }
 
     fn get_regs(&self, vcpu: &KvmVcpu) -> Result<Regs> {

@@ -1,7 +1,7 @@
 //! Platform-agnostic CPU register structs.
 
 /// x86-64 general-purpose and program-counter registers.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Regs {
     pub rax: u64,
     pub rbx: u64,
@@ -24,7 +24,7 @@ pub struct Regs {
 }
 
 /// One x86-64 segment descriptor (for CS, DS, SS, ES, FS, GS, TR, LDTR).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Segment {
     pub base:     u64,
     pub limit:    u32,
@@ -46,7 +46,7 @@ pub struct Segment {
 }
 
 /// Control registers, EFER, and all segment descriptors.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Sregs {
     pub cr0:  u64,
     pub cr2:  u64,
