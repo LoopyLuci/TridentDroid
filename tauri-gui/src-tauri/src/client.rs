@@ -183,6 +183,36 @@ impl DaemonClient {
         Ok(resp_rx)
     }
 
+    pub async fn snapshot(
+        &mut self,
+        instance_id: String,
+        snapshot_id: Option<String>,
+        include_disk: bool,
+    ) -> Result<proto::SnapshotResponse, tonic::Status> {
+        let req = Request::new(proto::SnapshotRequest {
+            instance_id,
+            snapshot_id: snapshot_id.unwrap_or_default(),
+            include_disk,
+        });
+        let resp = self.client.snapshot(req).await?;
+        Ok(resp.into_inner())
+    }
+
+    pub async fn restore(
+        &mut self,
+        snapshot_id: String,
+        vcpu_count: Option<u32>,
+        memory_mib: Option<u64>,
+    ) -> Result<proto::InstanceInfo, tonic::Status> {
+        let req = Request::new(proto::RestoreRequest {
+            snapshot_id,
+            vcpu_count: vcpu_count.unwrap_or(0),
+            memory_mib: memory_mib.unwrap_or(0),
+        });
+        let resp = self.client.restore(req).await?;
+        Ok(resp.into_inner())
+    }
+
     pub async fn stream_display(
         &mut self,
         instance_id: String,

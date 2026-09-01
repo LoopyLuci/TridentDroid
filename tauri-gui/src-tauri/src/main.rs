@@ -18,8 +18,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .manage(commands::AppState::default())
+        .manage(commands::AppState::new())
         .manage(streaming::StreamingState::default())
         .invoke_handler(tauri::generate_handler![
             commands::ping_daemon,
@@ -28,6 +27,8 @@ fn main() {
             commands::stop_instance,
             commands::get_instance_info,
             commands::fork_instance,
+            commands::create_snapshot,
+            commands::restore_snapshot,
             commands::adb_shell_command,
             commands::check_updates,
             commands::get_settings,

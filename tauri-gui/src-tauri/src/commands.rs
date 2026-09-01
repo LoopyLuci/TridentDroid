@@ -32,6 +32,13 @@ pub struct VmConfig {
     pub vendor_image: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotInfo {
+    pub snapshot_id: String,
+    pub size_bytes: u64,
+    pub duration_ms: u64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppSettings {
     pub grpc_host: String,
@@ -48,10 +55,39 @@ pub struct AppSettings {
     pub client_key_path: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AppState {
     pub daemon: Arc<Mutex<Option<DaemonClient>>>,
     pub settings: Arc<Mutex<AppSettings>>,
+}
+
+impl AppState {
+    pub fn new() -> Self {
+        Self {
+            daemon: Arc::new(Mutex::new(None)),
+            settings: Arc::new(Mutex::new(load_settings())),
+        }
+    }
+}
+
+fn settings_path() -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|d| d.join("TridentDroid").join("settings.json"))
+}
+
+fn load_settings() -> AppSettings {
+    settings_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn persist_settings(settings: &AppSettings) -> Result<(), String> {
+    let path = settings_path().ok_or_else(|| "Could not determine config directory".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    std::fs::write(path, json).map_err(|e| e.to_string())
 }
 
 fn map_instance_info(info: &proto::InstanceInfo) -> InstanceInfo {
@@ -184,6 +220,40 @@ pub async fn fork_instance(
 }
 
 #[tauri::command]
+pub async fn create_snapshot(
+    instance_id: String,
+    snapshot_id: Option<String>,
+    include_disk: bool,
+    state: State<'_, AppState>,
+) -> Result<SnapshotInfo, String> {
+    let mut daemon = get_client(&state).await?;
+    let client = daemon.as_mut().unwrap();
+    match client.snapshot(instance_id, snapshot_id, include_disk).await {
+        Ok(resp) => Ok(SnapshotInfo {
+            snapshot_id: resp.snapshot_id,
+            size_bytes: resp.size_bytes,
+            duration_ms: resp.duration_ms,
+        }),
+        Err(e) => Err(format!("Snapshot failed: {}", e)),
+    }
+}
+
+#[tauri::command]
+pub async fn restore_snapshot(
+    snapshot_id: String,
+    vcpu_count: Option<u32>,
+    memory_mib: Option<u64>,
+    state: State<'_, AppState>,
+) -> Result<InstanceInfo, String> {
+    let mut daemon = get_client(&state).await?;
+    let client = daemon.as_mut().unwrap();
+    match client.restore(snapshot_id, vcpu_count, memory_mib).await {
+        Ok(info) => Ok(map_instance_info(&info)),
+        Err(e) => Err(format!("Restore failed: {}", e)),
+    }
+}
+
+#[tauri::command]
 pub async fn adb_shell_command(
     _instance_id: String,
     command: String,
@@ -213,6 +283,7 @@ pub async fn save_settings(
     settings: AppSettings,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    persist_settings(&settings)?;
     *state.settings.lock().await = settings;
     Ok(())
 }

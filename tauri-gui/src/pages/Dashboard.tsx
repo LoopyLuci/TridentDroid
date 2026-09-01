@@ -1,14 +1,47 @@
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Plus, Monitor, Cpu, MemoryStick, HardDrive, Loader2, AlertCircle } from 'lucide-react';
+import { Plus, Monitor, Cpu, MemoryStick, HardDrive, Loader2, AlertCircle, History } from 'lucide-react';
+import { useState } from 'react';
 import { useInstances } from '../hooks/useInstances';
 import VmCard from '../components/VmCard';
+import Modal from '../components/Modal';
 import { api } from '../lib/api';
 import { toast } from 'sonner';
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const { instances, loading, error, refresh } = useInstances();
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [restoreId, setRestoreId] = useState('');
+  const [restoreVcpu, setRestoreVcpu] = useState('');
+  const [restoreMemory, setRestoreMemory] = useState('');
+  const [restoring, setRestoring] = useState(false);
+
+  const handleRestore = async () => {
+    if (!restoreId.trim()) {
+      toast.error('Enter a snapshot ID');
+      return;
+    }
+    setRestoring(true);
+    try {
+      const info = await api.restoreSnapshot(
+        restoreId.trim(),
+        restoreVcpu ? parseInt(restoreVcpu) : undefined,
+        restoreMemory ? parseInt(restoreMemory) : undefined,
+      );
+      toast.success(`Restored ${info.instance_id}`);
+      setRestoreOpen(false);
+      setRestoreId('');
+      setRestoreVcpu('');
+      setRestoreMemory('');
+      refresh();
+      navigate(`/vm/${info.instance_id}`);
+    } catch (e) {
+      toast.error(`Restore failed: ${e}`);
+    } finally {
+      setRestoring(false);
+    }
+  };
 
   const handleStop = async (id: string) => {
     try {
@@ -59,6 +92,13 @@ export default function Dashboard() {
               Ping Daemon
             </button>
             <button
+              onClick={() => setRestoreOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-secondary rounded-lg hover:bg-secondary/80 transition-colors"
+            >
+              <History className="w-4 h-4" />
+              Restore Snapshot
+            </button>
+            <button
               onClick={() => navigate('/create')}
               className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
             >
@@ -67,6 +107,54 @@ export default function Dashboard() {
             </button>
           </div>
         </div>
+
+        <Modal open={restoreOpen} title="Restore from Snapshot" onClose={() => setRestoreOpen(false)}>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium mb-2">Snapshot ID</label>
+              <input
+                type="text"
+                value={restoreId}
+                onChange={e => setRestoreId(e.target.value)}
+                placeholder="snapshot ID from a previous Snapshot action"
+                className="w-full px-3 py-2 bg-background border rounded-lg font-mono text-sm"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium mb-2">vCPUs (optional)</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="24"
+                  value={restoreVcpu}
+                  onChange={e => setRestoreVcpu(e.target.value)}
+                  placeholder="unchanged"
+                  className="w-full px-3 py-2 bg-background border rounded-lg text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-2">Memory MiB (optional)</label>
+                <input
+                  type="number"
+                  min="512"
+                  step="512"
+                  value={restoreMemory}
+                  onChange={e => setRestoreMemory(e.target.value)}
+                  placeholder="unchanged"
+                  className="w-full px-3 py-2 bg-background border rounded-lg text-sm"
+                />
+              </div>
+            </div>
+            <button
+              onClick={handleRestore}
+              disabled={restoring}
+              className="w-full py-2.5 bg-primary text-primary-foreground rounded-lg font-medium hover:bg-primary/90 disabled:opacity-50"
+            >
+              {restoring ? 'Restoring…' : 'Restore'}
+            </button>
+          </div>
+        </Modal>
 
         {/* Stats */}
         <div className="grid grid-cols-4 gap-4 mb-6">

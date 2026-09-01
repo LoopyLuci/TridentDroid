@@ -17,6 +17,12 @@ export interface VmConfig {
   vendor_image?: string
 }
 
+export interface SnapshotInfo {
+  snapshot_id: string
+  size_bytes: number
+  duration_ms: number
+}
+
 export interface AppSettings {
   grpc_host: string
   grpc_port: number
