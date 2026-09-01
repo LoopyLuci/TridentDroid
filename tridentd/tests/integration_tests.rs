@@ -23,6 +23,9 @@ mod linux_tests {
             initrd_path: None,
             cmdline: String::new(),
             sriov_vf: None,
+            system_image: None,
+            vendor_image: None,
+            console_sock: Some("/tmp/trident-test.sock".to_string()),
         };
 
         let hyp = std::sync::Arc::new(

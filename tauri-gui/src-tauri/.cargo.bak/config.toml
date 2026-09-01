@@ -1,0 +1,4 @@
+[workspace]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-args=/MANIFEST:EMBED /MANIFESTINPUT:Z:\\Projects\\TridentDroidEmulator\\tauri-gui\\src-tauri\\app.manifest"]
