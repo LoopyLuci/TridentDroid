@@ -19,10 +19,16 @@ use tridentd::{
 // Service state
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug)]
 struct Instance {
     info: tridentd::InstanceInfo,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Kept alive so `Snapshot` can reach the running VM's state. `None`
+    /// briefly during startup is not possible today (populated before the
+    /// instance is inserted into the registry) — `Option` only because
+    /// `Instance::clone()` (used by `list_instances`/`get_instance`, which
+    /// only need `info`) can't clone an `Arc<Vm<..>>` cheaply-but-uniquely
+    /// in a way that would be meaningful to hand out, so clones drop it.
+    vm: Option<Arc<crate::vmm::Vm<crate::platform::PlatformHypervisor>>>,
 }
 
 impl Clone for Instance {
@@ -30,8 +36,19 @@ impl Clone for Instance {
         Self {
             info: self.info.clone(),
             shutdown_tx: None,
+            vm: self.vm.clone(),
         }
     }
+}
+
+/// Where snapshot files live. Mirrors the existing `/tmp/trident-*`
+/// convention used for console/display sockets.
+fn snapshots_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("/tmp/trident-snapshots")
+}
+
+fn snapshot_path(snapshot_id: &str) -> std::path::PathBuf {
+    snapshots_dir().join(format!("{snapshot_id}.trident-snap"))
 }
 
 #[derive(Clone)]
@@ -86,14 +103,21 @@ impl TridentDaemon for TridentService {
         };
 
         let hyp = std::sync::Arc::new(crate::platform::open_hypervisor().map_err(internal)?);
-        let vm = crate::vmm::Vm::create(&hyp, config).map_err(internal)?;
+        let mut vm = crate::vmm::Vm::create(&hyp, config).map_err(internal)?;
+        let handles = vm.spawn_vcpus();
+        let vm = Arc::new(vm);
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
         let spawn_id = id.clone();
         tokio::spawn(async move {
             tokio::select! {
-                result = vm.run() => {
+                result = async {
+                    for handle in handles {
+                        handle.await??;
+                    }
+                    Ok::<(), anyhow::Error>(())
+                } => {
                     if let Err(e) = result {
                         tracing::error!("VM {} crashed: {:#}", spawn_id, e);
                     }
@@ -119,8 +143,122 @@ impl TridentDaemon for TridentService {
         let instance = Instance {
             info: instance_info.clone(),
             shutdown_tx: Some(shutdown_tx),
+            vm: Some(vm),
         };
 
+        self.instances.write().await.insert(id.clone(), instance);
+
+        Ok(Response::new(instance_info))
+    }
+
+    // ── Snapshot ──────────────────────────────────────────────────────────────
+    async fn snapshot(
+        &self,
+        req: Request<SnapshotRequest>,
+    ) -> Result<Response<SnapshotResponse>, Status> {
+        let r = req.into_inner();
+
+        let vm = {
+            let instances = self.instances.read().await;
+            let instance = instances
+                .get(&r.instance_id)
+                .ok_or_else(|| Status::not_found(format!("Instance {} not found", r.instance_id)))?;
+            instance
+                .vm
+                .clone()
+                .ok_or_else(|| Status::internal("instance has no live VM handle"))?
+        };
+
+        let snapshot_id = if r.snapshot_id.is_empty() { unique_id() } else { r.snapshot_id };
+        let path = snapshot_path(&snapshot_id);
+        std::fs::create_dir_all(snapshots_dir()).map_err(|e| Status::internal(e.to_string()))?;
+
+        info!("Snapshot instance={} -> {}", r.instance_id, snapshot_id);
+
+        let start = std::time::Instant::now();
+        // Vm::snapshot pauses every vCPU and can dump multi-GB of RAM —
+        // run it on a blocking thread rather than stalling the tokio runtime.
+        let path_for_task = path.clone();
+        let result = tokio::task::spawn_blocking(move || vm.snapshot(&path_for_task))
+            .await
+            .map_err(|e| Status::internal(format!("snapshot task panicked: {e}")))?
+            .map_err(internal)?;
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        info!("Snapshot {snapshot_id} written ({} bytes, {duration_ms}ms)", result.total_bytes);
+
+        Ok(Response::new(SnapshotResponse {
+            snapshot_id,
+            size_bytes: result.total_bytes,
+            duration_ms,
+        }))
+    }
+
+    // ── Restore ───────────────────────────────────────────────────────────────
+    async fn restore(
+        &self,
+        req: Request<RestoreRequest>,
+    ) -> Result<Response<tridentd::InstanceInfo>, Status> {
+        let r = req.into_inner();
+        let path = snapshot_path(&r.snapshot_id);
+        if !path.exists() {
+            return Err(Status::not_found(format!("Snapshot {} not found", r.snapshot_id)));
+        }
+
+        info!("Restore snapshot={}", r.snapshot_id);
+
+        let hyp = std::sync::Arc::new(crate::platform::open_hypervisor().map_err(internal)?);
+        let overrides = crate::vmm::vm::RestoreOverrides {
+            vcpu_count: if r.vcpu_count > 0 { Some(r.vcpu_count.clamp(1, 24) as u8) } else { None },
+            memory_mib: if r.memory_mib > 0 { Some(r.memory_mib.clamp(512, 65536)) } else { None },
+        };
+
+        let mut vm = tokio::task::spawn_blocking(move || crate::vmm::Vm::restore(&hyp, &path, overrides))
+            .await
+            .map_err(|e| Status::internal(format!("restore task panicked: {e}")))?
+            .map_err(internal)?;
+
+        let id = unique_id();
+        let handles = vm.spawn_vcpus();
+        let vm = Arc::new(vm);
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let spawn_id = id.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                result = async {
+                    for handle in handles {
+                        handle.await??;
+                    }
+                    Ok::<(), anyhow::Error>(())
+                } => {
+                    if let Err(e) = result {
+                        tracing::error!("VM {} crashed: {:#}", spawn_id, e);
+                    }
+                }
+                _ = shutdown_rx => {
+                    info!("VM {} shutdown requested", spawn_id);
+                }
+            }
+        });
+
+        let mut adp = self.adb_port_counter.lock().await;
+        let adb_port = *adp;
+        *adp += 1;
+
+        let instance_info = tridentd::InstanceInfo {
+            instance_id: id.clone(),
+            adb_host: "127.0.0.1".to_string(),
+            adb_port,
+            display_sock: format!("/tmp/trident-{id}-display.sock"),
+            state: tridentd::InstanceState::Booting as i32,
+        };
+
+        let instance = Instance {
+            info: instance_info.clone(),
+            shutdown_tx: Some(shutdown_tx),
+            vm: Some(vm),
+        };
         self.instances.write().await.insert(id.clone(), instance);
 
         Ok(Response::new(instance_info))

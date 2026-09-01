@@ -10,6 +10,7 @@
 //! All devices follow the Virtio 1.2 specification.
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use tracing::{debug, info, warn};
 
@@ -35,8 +36,12 @@ pub mod mmio {
     pub const DEVICE_ID: u64 = 0x008;
     pub const VENDOR_ID: u64 = 0x00C;
     pub const DEVICE_FEATURES: u64 = 0x010;
+    pub const DEVICE_FEATURES_SEL: u64 = 0x014;
     pub const DRIVER_FEATURES: u64 = 0x020;
+    pub const DRIVER_FEATURES_SEL: u64 = 0x024;
+    pub const QUEUE_SEL: u64 = 0x030;
     pub const QUEUE_NUM_MAX: u64 = 0x034;
+    pub const QUEUE_NUM: u64 = 0x038;
     pub const QUEUE_READY: u64 = 0x044;
     pub const QUEUE_NOTIFY: u64 = 0x050;
     pub const INTERRUPT_STATUS: u64 = 0x060;
@@ -52,10 +57,14 @@ pub mod mmio {
     pub const CONFIG_OFFSET: u64 = 0x100;
 }
 
+/// Virtqueue descriptor flags (`struct virtq_desc.flags`).
+pub const VIRTQ_DESC_F_NEXT: u16 = 1;
+pub const VIRTQ_DESC_F_WRITE: u16 = 2;
+
 // ── Status Register ─────────────────────────────────────────────────────────
 
 /// Virtio status register bits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct VirtioStatus(pub u32);
 
 impl VirtioStatus {
@@ -119,7 +128,7 @@ pub struct VirtqUsedElem {
 }
 
 /// A virtqueue instance.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct VirtQueue {
     pub idx: u16,
     pub num_max: u16,
@@ -176,13 +185,15 @@ impl VirtQueue {
         })
     }
 
-    /// Read the available ring index from guest memory.
+    /// Read the available ring index from guest memory. Layout is
+    /// `flags(u16) @ +0, idx(u16) @ +2, ring[...] @ +4` — the index is at
+    /// offset 2, not 0.
     pub fn read_avail_idx(&self, ram: &[u8]) -> u16 {
-        if self.avail_addr == 0 || self.avail_addr as usize + 2 > ram.len() {
+        if self.avail_addr == 0 || self.avail_addr as usize + 4 > ram.len() {
             return 0;
         }
-        let lo = self.avail_addr as usize + 0;
-        let hi = self.avail_addr as usize + 2;
+        let lo = self.avail_addr as usize + 2;
+        let hi = self.avail_addr as usize + 4;
         u16::from_le_bytes(ram[lo..hi].try_into().unwrap())
     }
 
@@ -204,11 +215,12 @@ impl VirtQueue {
         }
     }
 
-    /// Write the used ring index to guest memory.
+    /// Write the used ring index to guest memory. Same layout as the avail
+    /// ring — `flags(u16) @ +0, idx(u16) @ +2` — the index goes at offset 2.
     pub fn write_used_idx(&self, ram: &mut [u8], idx: u16) {
-        if self.used_addr as usize + 2 <= ram.len() {
-            let lo = self.used_addr as usize + 0;
-            let hi = self.used_addr as usize + 2;
+        if self.used_addr as usize + 4 <= ram.len() {
+            let lo = self.used_addr as usize + 2;
+            let hi = self.used_addr as usize + 4;
             ram[lo..hi].copy_from_slice(&idx.to_le_bytes());
         }
     }
@@ -231,6 +243,40 @@ impl VirtQueue {
             ram[start..end].copy_from_slice(&data[..end - start]);
         }
     }
+
+    /// Walk a descriptor chain starting at `head_idx`, following `.next`
+    /// while `VIRTQ_DESC_F_NEXT` is set. Bounded by `num_max` hops so a
+    /// corrupt/hostile chain (e.g. a cycle) can't loop forever.
+    pub fn read_chain(&self, ram: &[u8], head_idx: u16) -> Vec<VirtqDesc> {
+        let mut chain = Vec::new();
+        let mut idx = head_idx;
+        for _ in 0..self.num_max {
+            let Some(desc) = self.read_desc(ram, idx) else { break };
+            let has_next = desc.flags & VIRTQ_DESC_F_NEXT != 0;
+            let next = desc.next;
+            chain.push(desc);
+            if !has_next {
+                break;
+            }
+            idx = next;
+        }
+        chain
+    }
+}
+
+/// Shared virtio-mmio "common config" state every device embeds — the
+/// register-level negotiation/queue-setup state, as opposed to each
+/// device's own config space or virtqueue payload handling.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct CommonConfig {
+    pub device_features_sel: u32,
+    pub driver_features_sel: u32,
+    pub driver_features: u64,
+    pub queue_sel: u16,
+    pub queues: Vec<VirtQueue>,
+    pub status: VirtioStatus,
+    pub interrupt_status: u32,
+    pub config_generation: u32,
 }
 
 // ── VirtioDevice Trait ──────────────────────────────────────────────────────
@@ -242,9 +288,6 @@ pub trait VirtioDevice: Send + Sync {
 
     /// Device name.
     fn name(&self) -> &str;
-
-    /// Maximum number of virtqueues.
-    fn num_queues(&self) -> u16;
 
     /// Maximum queue size.
     fn max_queue_size(&self) -> u16;
@@ -263,6 +306,25 @@ pub trait VirtioDevice: Send + Sync {
 
     /// Reset the device.
     fn reset(&mut self) -> Result<()>;
+
+    /// Shared register-level transport state (feature negotiation, queue
+    /// setup, status). The generic `Device` impl in `device.rs` reads/writes
+    /// this directly to implement the virtio-mmio common-config register
+    /// block, so every device must expose it.
+    fn common(&self) -> &CommonConfig;
+    fn common_mut(&mut self) -> &mut CommonConfig;
+
+    /// Serialize this device's transport/negotiation state (and any small
+    /// ephemeral device-specific state, e.g. pending buffers) for a
+    /// snapshot. Deliberately excludes anything re-derivable from
+    /// `VmConfig` on restore (backing disk image paths/contents) — those
+    /// are re-supplied fresh, not duplicated into the snapshot file.
+    fn snapshot_state(&self) -> Result<Vec<u8>>;
+
+    /// Inverse of `snapshot_state` — called on a freshly-constructed device
+    /// (already given its `VmConfig`-derived setup, e.g. `set_backing`) to
+    /// restore its transport/negotiation state.
+    fn restore_state(&mut self, data: &[u8]) -> Result<()>;
 }
 
 // ── VirtioBlk ───────────────────────────────────────────────────────────────
@@ -272,14 +334,11 @@ pub struct VirtioBlk {
     device_id: u16,
     name: String,
     features: u64,
-    driver_features: u64,
-    status: VirtioStatus,
-    queues: Vec<VirtQueue>,
+    common: CommonConfig,
     backing_path: Option<String>,
     backing_data: Option<Vec<u8>>,
     sector_size: u64,
     capacity: u64,
-    config_gen: u32,
 }
 
 impl VirtioBlk {
@@ -288,14 +347,14 @@ impl VirtioBlk {
             device_id: 2,
             name: name.into(),
             features: Self::device_features(),
-            driver_features: 0,
-            status: VirtioStatus(0),
-            queues: vec![VirtQueue::new(0, 256)],
+            common: CommonConfig {
+                queues: vec![VirtQueue::new(0, 256)],
+                ..Default::default()
+            },
             backing_path: None,
             backing_data: None,
             sector_size: 512,
             capacity: 0,
-            config_gen: 0,
         }
     }
 
@@ -372,10 +431,6 @@ impl VirtioDevice for VirtioBlk {
         &self.name
     }
 
-    fn num_queues(&self) -> u16 {
-        self.queues.len() as u16
-    }
-
     fn max_queue_size(&self) -> u16 {
         256
     }
@@ -410,59 +465,111 @@ impl VirtioDevice for VirtioBlk {
         if queue_idx != 0 {
             return Ok(());
         }
-        let avail_idx = self.queues[0].read_avail_idx(ram);
-        let mut last_idx = self.queues[0].last_avail_idx;
+        let avail_idx = self.common.queues[0].read_avail_idx(ram);
+        let mut last_idx = self.common.queues[0].last_avail_idx;
         while last_idx != avail_idx {
-            let desc_idx = self.queues[0].read_avail_entry(ram, last_idx);
-            let desc = match self.queues[0].read_desc(ram, desc_idx) {
-                Some(d) => d,
-                None => break,
-            };
-            let hdr = self.queues[0].read_buffer(ram, &desc);
-            if hdr.len() >= 16 {
+            let desc_idx = self.common.queues[0].read_avail_entry(ram, last_idx);
+            // A standard virtio-blk request is a 3-descriptor chain: header
+            // (readable, 16 bytes: type/reserved/sector) -> data buffer
+            // (writable for a read request, readable for a write request)
+            // -> status byte (writable). Walking the whole chain — rather
+            // than treating the head descriptor's own buffer as the entire
+            // request — is what actually makes reads/writes transfer real
+            // data instead of just acking an empty request.
+            let chain = self.common.queues[0].read_chain(ram, desc_idx);
+            let total_len: u32 = chain.iter().map(|d| d.len).sum();
+            let Some(hdr_desc) = chain.first() else { break };
+            let hdr = self.common.queues[0].read_buffer(ram, hdr_desc);
+
+            let status: u8 = if hdr.len() >= 16 {
                 let req_type = u32::from_le_bytes(hdr[0..4].try_into().unwrap());
                 let sector = u64::from_le_bytes(hdr[8..16].try_into().unwrap());
                 let offset = sector * self.sector_size;
-                match req_type {
-                    0 => {
-                        let len = self.capacity.saturating_sub(offset).min(0x10000) as u64;
-                        let _ = self.handle_read(ram, offset, len)?;
+                match (req_type, chain.get(1), chain.last()) {
+                    (0, Some(data_desc), Some(_status_desc)) => {
+                        let len = self.capacity.saturating_sub(offset).min(data_desc.len as u64);
+                        let buf = self.handle_read(ram, offset, len)?;
+                        self.common.queues[0].write_buffer(ram, data_desc, &buf);
                         debug!("VirtioBlk read: sector={}, len={}", sector, len);
+                        0
                     }
-                    1 => {
-                        debug!("VirtioBlk write: sector={}", sector);
+                    (1, Some(data_desc), Some(_status_desc)) => {
+                        let buf = self.common.queues[0].read_buffer(ram, data_desc);
+                        self.handle_write(ram, offset, &buf)?;
+                        debug!("VirtioBlk write: sector={}, len={}", sector, buf.len());
+                        0
                     }
-                    5 => {
+                    (5, ..) => {
                         debug!("VirtioBlk flush");
+                        0
                     }
                     _ => {
-                        warn!("VirtioBlk unknown request type: {}", req_type);
+                        warn!("VirtioBlk unknown/malformed request type: {}", req_type);
+                        2 // VIRTIO_BLK_S_UNSUPP
                     }
                 }
+            } else {
+                1 // VIRTIO_BLK_S_IOERR — header too short to parse
+            };
+
+            // A real guest driver waits on this status byte, not just the
+            // used-ring entry — write it into the chain's last descriptor.
+            if let Some(status_desc) = chain.last() {
+                self.common.queues[0].write_buffer(ram, status_desc, &[status]);
             }
-            self.queues[0].write_used_entry(
+
+            self.common.queues[0].write_used_entry(
                 ram,
                 last_idx,
-                &VirtqUsedElem {
-                    id: desc_idx as u32,
-                    len: desc.len,
-                },
+                &VirtqUsedElem { id: desc_idx as u32, len: total_len },
             );
             last_idx = last_idx.wrapping_add(1);
         }
-        self.queues[0].last_avail_idx = last_idx;
-        self.queues[0].write_used_idx(ram, self.queues[0].last_avail_idx);
+        self.common.queues[0].last_avail_idx = last_idx;
+        self.common.queues[0].write_used_idx(ram, last_idx);
         Ok(())
     }
 
     fn reset(&mut self) -> Result<()> {
-        self.status = VirtioStatus(0);
-        self.driver_features = 0;
-        self.config_gen = 0;
-        for q in &mut self.queues {
+        self.common.status = VirtioStatus(0);
+        self.common.driver_features = 0;
+        self.common.config_generation = 0;
+        for q in &mut self.common.queues {
             q.ready = false;
             q.last_avail_idx = 0;
         }
+        Ok(())
+    }
+
+    fn common(&self) -> &CommonConfig {
+        &self.common
+    }
+
+    fn common_mut(&mut self) -> &mut CommonConfig {
+        &mut self.common
+    }
+
+    fn snapshot_state(&self) -> Result<Vec<u8>> {
+        #[derive(Serialize)]
+        struct S<'a> {
+            common: &'a CommonConfig,
+            sector_size: u64,
+            capacity: u64,
+        }
+        Ok(bincode::serialize(&S { common: &self.common, sector_size: self.sector_size, capacity: self.capacity })?)
+    }
+
+    fn restore_state(&mut self, data: &[u8]) -> Result<()> {
+        #[derive(Deserialize)]
+        struct S {
+            common: CommonConfig,
+            sector_size: u64,
+            capacity: u64,
+        }
+        let s: S = bincode::deserialize(data)?;
+        self.common = s.common;
+        self.sector_size = s.sector_size;
+        self.capacity = s.capacity;
         Ok(())
     }
 }
@@ -474,9 +581,7 @@ pub struct VirtioConsole {
     device_id: u16,
     name: String,
     features: u64,
-    driver_features: u64,
-    status: VirtioStatus,
-    queues: Vec<VirtQueue>,
+    common: CommonConfig,
     rx_buffers: VecDeque<Vec<u8>>,
     tx_buffers: VecDeque<Vec<u8>>,
     /// Console socket path (optional).
@@ -489,9 +594,10 @@ impl VirtioConsole {
             device_id: 3,
             name: name.into(),
             features: (1 << 0) | (1 << 1),
-            driver_features: 0,
-            status: VirtioStatus(0),
-            queues: vec![VirtQueue::new(0, 256), VirtQueue::new(1, 256)],
+            common: CommonConfig {
+                queues: vec![VirtQueue::new(0, 256), VirtQueue::new(1, 256)],
+                ..Default::default()
+            },
             rx_buffers: VecDeque::new(),
             tx_buffers: VecDeque::new(),
             console_sock: None,
@@ -523,10 +629,6 @@ impl VirtioDevice for VirtioConsole {
         &self.name
     }
 
-    fn num_queues(&self) -> u16 {
-        self.queues.len() as u16
-    }
-
     fn max_queue_size(&self) -> u16 {
         256
     }
@@ -555,7 +657,7 @@ impl VirtioDevice for VirtioConsole {
     }
 
     fn notify_queue(&mut self, queue_idx: u16, ram: &mut [u8]) -> Result<()> {
-        let queue = &mut self.queues[queue_idx as usize];
+        let queue = &mut self.common.queues[queue_idx as usize];
         let avail_idx = queue.read_avail_idx(ram);
         while queue.last_avail_idx != avail_idx {
             let desc_idx = queue.read_avail_entry(ram, queue.last_avail_idx);
@@ -587,14 +689,46 @@ impl VirtioDevice for VirtioConsole {
     }
 
     fn reset(&mut self) -> Result<()> {
-        self.status = VirtioStatus(0);
-        self.driver_features = 0;
+        self.common.status = VirtioStatus(0);
+        self.common.driver_features = 0;
         self.rx_buffers.clear();
         self.tx_buffers.clear();
-        for q in &mut self.queues {
+        for q in &mut self.common.queues {
             q.ready = false;
             q.last_avail_idx = 0;
         }
+        Ok(())
+    }
+
+    fn common(&self) -> &CommonConfig {
+        &self.common
+    }
+
+    fn common_mut(&mut self) -> &mut CommonConfig {
+        &mut self.common
+    }
+
+    fn snapshot_state(&self) -> Result<Vec<u8>> {
+        #[derive(Serialize)]
+        struct S<'a> {
+            common: &'a CommonConfig,
+            rx_buffers: &'a VecDeque<Vec<u8>>,
+            tx_buffers: &'a VecDeque<Vec<u8>>,
+        }
+        Ok(bincode::serialize(&S { common: &self.common, rx_buffers: &self.rx_buffers, tx_buffers: &self.tx_buffers })?)
+    }
+
+    fn restore_state(&mut self, data: &[u8]) -> Result<()> {
+        #[derive(Deserialize)]
+        struct S {
+            common: CommonConfig,
+            rx_buffers: VecDeque<Vec<u8>>,
+            tx_buffers: VecDeque<Vec<u8>>,
+        }
+        let s: S = bincode::deserialize(data)?;
+        self.common = s.common;
+        self.rx_buffers = s.rx_buffers;
+        self.tx_buffers = s.tx_buffers;
         Ok(())
     }
 }
@@ -606,14 +740,12 @@ pub struct VirtioInput {
     device_id: u16,
     name: String,
     features: u64,
-    driver_features: u64,
-    status: VirtioStatus,
-    queues: Vec<VirtQueue>,
+    common: CommonConfig,
     events: VecDeque<InputEvent>,
 }
 
 /// Input event (virtio_input_event).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InputEvent {
     pub type_: u16,
     pub code: u16,
@@ -626,9 +758,10 @@ impl VirtioInput {
             device_id: 18,
             name: name.into(),
             features: 0,
-            driver_features: 0,
-            status: VirtioStatus(0),
-            queues: vec![VirtQueue::new(0, 256), VirtQueue::new(1, 256)],
+            common: CommonConfig {
+                queues: vec![VirtQueue::new(0, 256), VirtQueue::new(1, 256)],
+                ..Default::default()
+            },
             events: VecDeque::new(),
         }
     }
@@ -646,10 +779,6 @@ impl VirtioDevice for VirtioInput {
 
     fn name(&self) -> &str {
         &self.name
-    }
-
-    fn num_queues(&self) -> u16 {
-        self.queues.len() as u16
     }
 
     fn max_queue_size(&self) -> u16 {
@@ -677,7 +806,7 @@ impl VirtioDevice for VirtioInput {
     }
 
     fn notify_queue(&mut self, queue_idx: u16, ram: &mut [u8]) -> Result<()> {
-        let queue = &mut self.queues[queue_idx as usize];
+        let queue = &mut self.common.queues[queue_idx as usize];
         let avail_idx = queue.read_avail_idx(ram);
         while queue.last_avail_idx != avail_idx {
             let desc_idx = queue.read_avail_entry(ram, queue.last_avail_idx);
@@ -724,13 +853,42 @@ impl VirtioDevice for VirtioInput {
     }
 
     fn reset(&mut self) -> Result<()> {
-        self.status = VirtioStatus(0);
-        self.driver_features = 0;
+        self.common.status = VirtioStatus(0);
+        self.common.driver_features = 0;
         self.events.clear();
-        for q in &mut self.queues {
+        for q in &mut self.common.queues {
             q.ready = false;
             q.last_avail_idx = 0;
         }
+        Ok(())
+    }
+
+    fn common(&self) -> &CommonConfig {
+        &self.common
+    }
+
+    fn common_mut(&mut self) -> &mut CommonConfig {
+        &mut self.common
+    }
+
+    fn snapshot_state(&self) -> Result<Vec<u8>> {
+        #[derive(Serialize)]
+        struct S<'a> {
+            common: &'a CommonConfig,
+            events: &'a VecDeque<InputEvent>,
+        }
+        Ok(bincode::serialize(&S { common: &self.common, events: &self.events })?)
+    }
+
+    fn restore_state(&mut self, data: &[u8]) -> Result<()> {
+        #[derive(Deserialize)]
+        struct S {
+            common: CommonConfig,
+            events: VecDeque<InputEvent>,
+        }
+        let s: S = bincode::deserialize(data)?;
+        self.common = s.common;
+        self.events = s.events;
         Ok(())
     }
 }
@@ -742,9 +900,7 @@ pub struct VirtioNet {
     device_id: u16,
     name: String,
     features: u64,
-    driver_features: u64,
-    status: VirtioStatus,
-    queues: Vec<VirtQueue>,
+    common: CommonConfig,
     mac: [u8; 6],
     rx_packets: VecDeque<Vec<u8>>,
 }
@@ -755,9 +911,10 @@ impl VirtioNet {
             device_id: 1,
             name: name.into(),
             features: (1 << 0) | (1 << 1) | (1 << 5) | (1 << 10) | (1 << 16),
-            driver_features: 0,
-            status: VirtioStatus(0),
-            queues: vec![VirtQueue::new(0, 256), VirtQueue::new(1, 256)],
+            common: CommonConfig {
+                queues: vec![VirtQueue::new(0, 256), VirtQueue::new(1, 256)],
+                ..Default::default()
+            },
             mac: [0x52, 0x54, 0x00, 0x12, 0x34, 0x56],
             rx_packets: VecDeque::new(),
         }
@@ -771,10 +928,6 @@ impl VirtioDevice for VirtioNet {
 
     fn name(&self) -> &str {
         &self.name
-    }
-
-    fn num_queues(&self) -> u16 {
-        self.queues.len() as u16
     }
 
     fn max_queue_size(&self) -> u16 {
@@ -806,17 +959,19 @@ impl VirtioDevice for VirtioNet {
     }
 
     fn notify_queue(&mut self, queue_idx: u16, ram: &mut [u8]) -> Result<()> {
-        let queue = &mut self.queues[queue_idx as usize];
+        let queue = &mut self.common.queues[queue_idx as usize];
         let avail_idx = queue.read_avail_idx(ram);
         while queue.last_avail_idx != avail_idx {
             let desc_idx = queue.read_avail_entry(ram, queue.last_avail_idx);
             if let Some(desc) = queue.read_desc(ram, desc_idx) {
                 match queue_idx {
                     0 => {
-                        // RX packets — empty for now
+                        // RX packets — empty for now (no host networking
+                        // backend wired up yet; out of scope for this pass,
+                        // see the Tier 2 plan's "explicitly out of scope").
                     }
                     1 => {
-                        // TX packets — empty for now
+                        // TX packets — empty for now, same reason.
                     }
                     _ => {}
                 }
@@ -836,13 +991,45 @@ impl VirtioDevice for VirtioNet {
     }
 
     fn reset(&mut self) -> Result<()> {
-        self.status = VirtioStatus(0);
-        self.driver_features = 0;
+        self.common.status = VirtioStatus(0);
+        self.common.driver_features = 0;
         self.rx_packets.clear();
-        for q in &mut self.queues {
+        for q in &mut self.common.queues {
             q.ready = false;
             q.last_avail_idx = 0;
         }
+        Ok(())
+    }
+
+    fn common(&self) -> &CommonConfig {
+        &self.common
+    }
+
+    fn common_mut(&mut self) -> &mut CommonConfig {
+        &mut self.common
+    }
+
+    fn snapshot_state(&self) -> Result<Vec<u8>> {
+        #[derive(Serialize)]
+        struct S<'a> {
+            common: &'a CommonConfig,
+            mac: [u8; 6],
+            rx_packets: &'a VecDeque<Vec<u8>>,
+        }
+        Ok(bincode::serialize(&S { common: &self.common, mac: self.mac, rx_packets: &self.rx_packets })?)
+    }
+
+    fn restore_state(&mut self, data: &[u8]) -> Result<()> {
+        #[derive(Deserialize)]
+        struct S {
+            common: CommonConfig,
+            mac: [u8; 6],
+            rx_packets: VecDeque<Vec<u8>>,
+        }
+        let s: S = bincode::deserialize(data)?;
+        self.common = s.common;
+        self.mac = s.mac;
+        self.rx_packets = s.rx_packets;
         Ok(())
     }
 }

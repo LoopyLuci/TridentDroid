@@ -25,6 +25,12 @@ service TridentDaemon {
   // Fork an existing instance into N children using COW memory.
   rpc Fork(ForkRequest) returns (stream InstanceInfo);
 
+  // Snapshot a running instance's full state to disk.
+  rpc Snapshot(SnapshotRequest) returns (SnapshotResponse);
+
+  // Restore an instance from a snapshot file.
+  rpc Restore(RestoreRequest) returns (InstanceInfo);
+
   // Bidirectional ADB shell stream.
   rpc AdbShell(stream AdbShellRequest) returns (stream AdbShellResponse);
 

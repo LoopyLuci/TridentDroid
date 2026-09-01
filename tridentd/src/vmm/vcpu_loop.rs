@@ -7,7 +7,9 @@ use anyhow::{Context, Result};
 use std::io::Write;
 use std::sync::Arc;
 use tracing::{debug, info};
-use trident_hal::{Hypervisor, Regs, Segment, Sregs, VcpuExit};
+use trident_hal::{Hypervisor, Regs, Segment, Sregs, VcpuAccess, VcpuExit};
+
+use super::pause::{is_pause_requested, ParkedVcpu, PauseGate, PauseRequested};
 
 pub struct VcpuRunner;
 
@@ -81,18 +83,28 @@ impl VcpuRunner {
         hyp: &Arc<H>,
         mut vcpu: H::Vcpu,
         devices: Arc<std::sync::Mutex<crate::vmm::device::DeviceManager>>,
-        ram: Arc<std::sync::Mutex<Vec<u8>>>,
+        ram: Arc<std::sync::Mutex<super::vm::AlignedRam>>,
+        pause_gate: Arc<PauseGate>,
+        vcpu_index: usize,
     ) -> Result<()> {
         let stdout = std::io::stdout();
         let mut uart_lcr: u8 = 0;
         let mut uart_ier: u8 = 0;
 
-        loop {
-            match hyp.run_vcpu(&mut vcpu).context("run_vcpu failed")? {
-                VcpuExit::IoOut { port, data: data_vec }
-                    if (0x3F8..=0x3FF).contains(&port) =>
-                {
-                    let data = data_vec.as_slice();
+        // PIO/MMIO accesses are handled synchronously here, inside the
+        // backend's own run loop — this is the only point where a read's
+        // result can still reach the guest (see `VcpuAccess`'s doc comment).
+        // It's also the natural checkpoint for pausing (see `pause.rs`):
+        // this callback fires on essentially every guest instruction that
+        // touches an I/O port or device, so bailing out here when a pause
+        // is requested reliably unwinds `run_vcpu` back to this function's
+        // own loop below, where register state can still be captured.
+        let mut on_access = |access: VcpuAccess| -> Result<()> {
+            if pause_gate.should_pause() {
+                anyhow::bail!(PauseRequested);
+            }
+            match access {
+                VcpuAccess::IoOut { port, data } if (0x3F8..=0x3FF).contains(&port) => {
                     match port {
                         0x3F9 if uart_lcr & 0x80 == 0 => {
                             if let Some(&v) = data.first() { uart_ier = v; }
@@ -108,9 +120,7 @@ impl VcpuRunner {
                         _ => {}
                     }
                 }
-                VcpuExit::IoIn { port, mut data, .. }
-                    if (0x3F8..=0x3FF).contains(&port) =>
-                {
+                VcpuAccess::IoIn { port, data } if (0x3F8..=0x3FF).contains(&port) => {
                     let val: u8 = match port {
                         0x3F9 if uart_lcr & 0x80 == 0 => uart_ier,
                         0x3FA => {
@@ -123,7 +133,7 @@ impl VcpuRunner {
                     };
                     for b in data.iter_mut() { *b = val; }
                 }
-                VcpuExit::IoIn { port, mut data, .. } => {
+                VcpuAccess::IoIn { port, data } => {
                     let val: u8 = match port {
                         0x61 => 0x20,
                         0x40..=0x42 => 0x00,
@@ -132,46 +142,70 @@ impl VcpuRunner {
                     };
                     for b in data.iter_mut() { *b = val; }
                 }
-                VcpuExit::IoOut { .. } => {}
-                VcpuExit::MmioRead { addr, len, .. } => {
-                    let mut data_vec = vec![0u8; len as usize];
-                    {
-                        let devs = devices.lock().unwrap();
-                        if devs.mmio_read(addr, &mut data_vec).is_ok() { continue; }
-                    }
-                    {
-                        let ram_guard = ram.lock().unwrap();
+                VcpuAccess::IoOut { .. } => {}
+                VcpuAccess::MmioRead { addr, data } => {
+                    let ram_guard = ram.lock().unwrap();
+                    let handled = devices
+                        .lock()
+                        .unwrap()
+                        .mmio_read(addr, data, &ram_guard)
+                        .is_ok();
+                    if !handled {
                         let start = addr as usize;
-                        let end = (start + data_vec.len()).min(ram_guard.len());
-                        data_vec[..end - start].copy_from_slice(&ram_guard[start..end]);
+                        let end = (start + data.len()).min(ram_guard.len());
+                        if end > start {
+                            data[..end - start].copy_from_slice(&ram_guard[start..end]);
+                        }
                     }
                 }
-                VcpuExit::MmioWrite { addr, data: data_vec, .. } => {
-                    {
-                        let devs = devices.lock().unwrap();
-                        if devs.mmio_write(addr, &data_vec).is_ok() { continue; }
-                    }
-                    {
-                        let mut ram_guard = ram.lock().unwrap();
+                VcpuAccess::MmioWrite { addr, data } => {
+                    let mut ram_guard = ram.lock().unwrap();
+                    let handled = devices
+                        .lock()
+                        .unwrap()
+                        .mmio_write(addr, data, &mut ram_guard)
+                        .is_ok();
+                    if !handled {
                         let start = addr as usize;
-                        let end = (start + data_vec.len()).min(ram_guard.len());
-                        ram_guard[start..end].copy_from_slice(&data_vec[..end - start]);
+                        let end = (start + data.len()).min(ram_guard.len());
+                        if end > start {
+                            ram_guard[start..end].copy_from_slice(&data[..end - start]);
+                        }
                     }
                 }
-                VcpuExit::Hlt => {
+                _ => {}
+            }
+            Ok(())
+        };
+
+        loop {
+            match hyp.run_vcpu(&mut vcpu, &mut on_access) {
+                Ok(VcpuExit::Hlt) => {
                     info!("vCPU HLT - guest halted cleanly");
                     break;
                 }
-                VcpuExit::Shutdown => {
+                Ok(VcpuExit::Shutdown) => {
                     info!("vCPU SHUTDOWN");
                     break;
                 }
-                VcpuExit::Debug => {
+                Ok(VcpuExit::Debug) => {
                     debug!("vCPU DEBUG breakpoint");
                 }
-                _ => {
+                Ok(_) => {
                     debug!("vCPU unhandled exit - re-entering");
                 }
+                Err(e) if is_pause_requested(&e) => {
+                    let regs = hyp.get_regs(&vcpu).context("get_regs during pause")?;
+                    let sregs = hyp.get_sregs(&vcpu).context("get_sregs during pause")?;
+                    pause_gate.park(vcpu_index, ParkedVcpu { regs, sregs });
+                    // Resumed — the coordinator may have restored different
+                    // register state (e.g. after a restore, though that
+                    // path currently rebuilds vCPUs fresh rather than
+                    // resuming one mid-flight); re-fetch nothing here and
+                    // just re-enter, matching whatever the vCPU's registers
+                    // now are.
+                }
+                Err(e) => return Err(e).context("run_vcpu failed"),
             }
         }
         Ok(())
